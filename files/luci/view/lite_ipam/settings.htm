@@ -1,0 +1,595 @@
+<%+header%>
+<%+lite_ipam/style%>
+<%+lite_ipam/ui%>
+<style type="text/css">
+	.lite-ipam-savebar {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 10px;
+	}
+	.lite-ipam-savebar.dirty { border-left: 3px solid #c77d2f; padding-left: 10px; }
+	.lite-ipam-savebar-text { font-size: 13px; line-height: 1.5; }
+	.lite-ipam-setting-panel[hidden] { display: none; }
+	.lite-ipam-pill-mini { margin-left: 6px; font-size: 11px; font-weight: normal; }
+	.lite-ipam-pill-mini.dirty { color: #8a5a00; }
+	.lite-ipam-hidden { display: none; }
+	.lite-ipam-field-dirty .cbi-value-title { color: #8a5a00; }
+	.lite-ipam-field-error input,
+	.lite-ipam-field-error select { border-color: #d14343; }
+	.lite-ipam-inline-error { color: #b42318; font-size: 12px; margin-top: 4px; line-height: 1.4; }
+	@media (max-width: 900px) { .lite-ipam-savebar { align-items: flex-start; flex-direction: column; } }
+</style>
+
+<div class="cbi-map lite-ipam-shell">
+	<h2 name="content">Lite IPAM 设置</h2>
+	<div class="cbi-map-descr">配置本地运行策略与外部 API 接入；这里的“刷新页面数据”只会重新读取当前配置，不会触发租约、子网、备份或导出任务。</div>
+
+	<div class="lite-ipam-page-message" id="settings-message"></div>
+	<div class="cbi-section lite-ipam-savebar" id="settings-savebar">
+		<div class="lite-ipam-savebar-text" id="settings-dirty-text">正在检查配置变更...</div>
+		<div class="lite-ipam-savebar-actions">
+			<button type="button" class="cbi-button cbi-button-apply" id="global-save">保存全部设置</button>
+			<button type="button" class="cbi-button" id="global-reload">刷新页面数据</button>
+		</div>
+	</div>
+
+	<ul class="cbi-tabmenu lite-ipam-tabs" id="settings-tabs">
+		<li class="cbi-tab" data-tab="basic"><a href="#">基础配置 <span class="lite-ipam-pill-mini" id="badge-basic">未修改</span></a></li>
+		<li class="cbi-tab-disabled" data-tab="backup"><a href="#">备份策略 <span class="lite-ipam-pill-mini" id="badge-backup">未修改</span></a></li>
+		<li class="cbi-tab-disabled" data-tab="maintenance"><a href="#">维护策略 <span class="lite-ipam-pill-mini" id="badge-maintenance">未修改</span></a></li>
+		<li class="cbi-tab-disabled" data-tab="api"><a href="#">API 接入 <span class="lite-ipam-pill-mini" id="badge-api">未修改</span></a></li>
+	</ul>
+
+	<div>
+		<div class="cbi-section lite-ipam-setting-panel" id="section-basic" data-panel="basic">
+			<h3>基础配置</h3>
+			<div class="cbi-section-descr">配置服务开关、数据目录和节点基础行为。启用服务时数据目录必须是绝对路径。</div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_enabled">服务开关</label><div class="cbi-value-field"><select id="core_enabled"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_data_root">数据目录</label><div class="cbi-value-field"><input id="core_data_root" type="text" placeholder="/mnt/sata/lite-ipam" /><div class="lite-ipam-help">启用服务时必须填写绝对路径。保存后会自动检查目录存在性、可写性与数据库状态。</div></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_auto_init">自动初始化</label><div class="cbi-value-field"><select id="core_auto_init"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_auto_create_subdirs">自动创建子目录</label><div class="cbi-value-field"><select id="core_auto_create_subdirs"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_node_name">节点名称</label><div class="cbi-value-field"><input id="core_node_name" type="text" /></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_apply_mode">应用方式</label><div class="cbi-value-field"><select id="core_apply_mode"><option value="immediate">立即应用</option></select></div></div>
+
+		</div>
+
+		<div class="cbi-section lite-ipam-setting-panel" id="section-backup" data-panel="backup" hidden>
+			<h3>备份策略</h3>
+			<div class="cbi-section-descr">配置自动备份、保留天数、Cron 计划和邮件通知。</div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_enabled">启用备份</label><div class="cbi-value-field"><select id="backup_enabled"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="core_backup_retention_days">备份保留天数</label><div class="cbi-value-field"><input id="core_backup_retention_days" type="number" min="1" step="1" /></div></div>
+			<div id="backup-details">
+				<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_cron_enabled">启用 Cron</label><div class="cbi-value-field"><select id="backup_cron_enabled"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+				<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_cron_schedule">Cron 计划</label><div class="cbi-value-field"><input id="backup_cron_schedule" type="text" placeholder="0 3 * * *" /></div></div>
+				<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_mail_enabled">启用邮件通知</label><div class="cbi-value-field"><select id="backup_mail_enabled"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+				<div id="backup-mail-details">
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_mail_from">发件人</label><div class="cbi-value-field"><input id="backup_mail_from" type="text" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_mail_to">收件人</label><div class="cbi-value-field"><input id="backup_mail_to" type="text" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_smtp_host">SMTP 主机</label><div class="cbi-value-field"><input id="backup_smtp_host" type="text" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_smtp_port">SMTP 端口</label><div class="cbi-value-field"><input id="backup_smtp_port" type="number" min="1" step="1" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_smtp_user">SMTP 用户名</label><div class="cbi-value-field"><input id="backup_smtp_user" type="text" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_smtp_password">SMTP 密码</label><div class="cbi-value-field"><input id="backup_smtp_password" type="password" /></div></div>
+					<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="backup_smtp_tls">SMTP TLS</label><div class="cbi-value-field"><select id="backup_smtp_tls"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+				</div>
+			</div>
+
+		</div>
+
+		<div class="cbi-section lite-ipam-setting-panel" id="section-maintenance" data-panel="maintenance" hidden>
+			<h3>维护策略</h3>
+			<div class="cbi-section-descr">配置租约、事件保留周期和清理后的数据库维护行为。</div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="maintenance_enabled">启用维护</label><div class="cbi-value-field"><select id="maintenance_enabled"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="maintenance_lease_retention_days">租约保留天数</label><div class="cbi-value-field"><input id="maintenance_lease_retention_days" type="number" min="1" step="1" /></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="maintenance_event_retention_days">事件保留天数</label><div class="cbi-value-field"><input id="maintenance_event_retention_days" type="number" min="1" step="1" /></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="maintenance_vacuum_after_cleanup">清理后压缩数据库</label><div class="cbi-value-field"><select id="maintenance_vacuum_after_cleanup"><option value="1">启用</option><option value="0">停用</option></select></div></div>
+		</div>
+
+		<div class="cbi-section lite-ipam-setting-panel" id="section-api" data-panel="api" hidden>
+			<h3>API 接入</h3>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="api_enabled">外部只读 API</label><div class="cbi-value-field"><select id="api_enabled"><option value="1">启用</option><option value="0">停用</option></select><div class="lite-ipam-help">仅控制外部只读 API，LuCI 管理接口不受此开关影响。</div></div></div>
+			<div id="api-security-block">
+				<div class="cbi-section-descr">外部只读 API 始终要求读取 Token；启用前请先配置 token。</div>
+				<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="api_read_token">读取 Token</label><div class="cbi-value-field"><input id="api_read_token" type="text" /></div></div>
+				<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="api_write_token">写入 Token</label><div class="cbi-value-field"><input id="api_write_token" type="text" /></div></div>
+			</div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="api_max_page_size">最大分页条数</label><div class="cbi-value-field"><input id="api_max_page_size" type="number" min="1" step="1" /></div></div>
+			<div class="cbi-value lite-ipam-field"><label class="cbi-value-title" for="api_default_page_size">默认分页条数</label><div class="cbi-value-field"><input id="api_default_page_size" type="number" min="1" step="1" /></div></div>
+			<details class="lite-ipam-raw">
+				<summary>API 访问说明</summary>
+				<div id="api-access-doc">正在载入...</div>
+			</details>
+			<details class="lite-ipam-raw"><summary>调试信息：当前 API 配置 JSON</summary><pre id="api-config-json">{}</pre></details>
+		</div>
+	</div>
+
+</div>
+
+<script type="text/javascript">
+	(function() {
+		var apiBase = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "api", "v1")%>';
+		var publicApiBase = '<%=luci.dispatcher.build_url("lite-ipam", "api", "v1")%>';
+		var ui = window.LiteIpamUi.create({ apiBase: apiBase, messageId: 'settings-message' });
+		var initialSnapshot = null;
+		var groupFieldMap = {
+			basic: ['core_enabled', 'core_data_root', 'core_auto_init', 'core_auto_create_subdirs', 'core_node_name', 'core_apply_mode'],
+			api: ['api_enabled', 'api_read_token', 'api_write_token', 'api_max_page_size', 'api_default_page_size'],
+			backup: ['backup_enabled', 'core_backup_retention_days', 'backup_cron_enabled', 'backup_cron_schedule', 'backup_mail_enabled', 'backup_mail_from', 'backup_mail_to', 'backup_smtp_host', 'backup_smtp_port', 'backup_smtp_user', 'backup_smtp_password', 'backup_smtp_tls'],
+			maintenance: ['maintenance_enabled', 'maintenance_lease_retention_days', 'maintenance_event_retention_days', 'maintenance_vacuum_after_cleanup']
+		};
+		var fieldIds = [
+			'core_enabled', 'core_node_name', 'core_data_root', 'core_auto_init', 'core_auto_create_subdirs', 'core_backup_retention_days', 'core_apply_mode',
+			'api_enabled', 'api_read_token', 'api_write_token', 'api_max_page_size', 'api_default_page_size',
+			'backup_enabled', 'backup_cron_enabled', 'backup_cron_schedule', 'backup_mail_enabled', 'backup_mail_from', 'backup_mail_to', 'backup_smtp_host', 'backup_smtp_port', 'backup_smtp_user', 'backup_smtp_password', 'backup_smtp_tls',
+			'maintenance_enabled', 'maintenance_lease_retention_days', 'maintenance_event_retention_days', 'maintenance_vacuum_after_cleanup'
+		];
+
+		function byId(id) {
+			return document.getElementById(id);
+		}
+
+		function fieldContainer(el) {
+			while (el && el.className != null) {
+				if (String(el.className).indexOf('lite-ipam-field') >= 0)
+					return el;
+				el = el.parentNode;
+			}
+			return null;
+		}
+
+		function fetchJson(path) {
+			return ui.fetchJson(path);
+		}
+
+		function postForm(path, body) {
+			return ui.postForm(path, body);
+		}
+
+		function escapeHtml(value) {
+			return ui.escapeHtml(value);
+		}
+
+		function setVisible(id, visible) {
+			var el = byId(id);
+			if (!el)
+				return;
+			el.classList.toggle('lite-ipam-hidden', !visible);
+			el.style.display = visible ? '' : 'none';
+		}
+
+		function setSaving(saving) {
+			byId('global-save').disabled = !!saving;
+			byId('global-reload').disabled = !!saving;
+		}
+
+		function setPageMessage(type, title, lines, rawData) {
+			ui.showMessage(type, title, lines, rawData);
+		}
+
+		function clearPageMessage() {
+			ui.clearMessage();
+		}
+
+		function updateConditionalFields() {
+			setVisible('api-security-block', byId('api_enabled').value === '1');
+			setVisible('backup-details', byId('backup_enabled').value === '1');
+			setVisible('backup-mail-details', byId('backup_enabled').value === '1' && byId('backup_mail_enabled').value === '1');
+		}
+
+		function renderMarkdownInline(text) {
+			return escapeHtml(text)
+				.replace(/`([^`]+)`/g, '<code>$1</code>')
+				.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+		}
+
+		function renderMarkdownDoc(markdown) {
+			var lines = markdown.split('\n');
+			var html = [];
+			var paragraph = [];
+			var listOpen = false;
+			var inCode = false;
+			var codeLines = [];
+
+			function flushParagraph() {
+				if (!paragraph.length)
+					return;
+				html.push('<p>' + renderMarkdownInline(paragraph.join(' ')) + '</p>');
+				paragraph = [];
+			}
+
+			function closeList() {
+				if (!listOpen)
+					return;
+				html.push('</ul>');
+				listOpen = false;
+			}
+
+			lines.forEach(function(line) {
+				if (line.indexOf('```') === 0) {
+					if (inCode) {
+						html.push('<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>');
+						codeLines = [];
+						inCode = false;
+					} else {
+						flushParagraph();
+						closeList();
+						inCode = true;
+					}
+					return;
+				}
+
+				if (inCode) {
+					codeLines.push(line);
+					return;
+				}
+
+				if (!line.trim()) {
+					flushParagraph();
+					closeList();
+					return;
+				}
+
+				if (line.indexOf('---') === 0) {
+					flushParagraph();
+					closeList();
+					html.push('<hr />');
+					return;
+				}
+
+				if (line.indexOf('> ') === 0) {
+					flushParagraph();
+					closeList();
+					html.push('<p>' + renderMarkdownInline(line.slice(2)) + '</p>');
+					return;
+				}
+
+				if (line.indexOf('## ') === 0) {
+					flushParagraph();
+					closeList();
+					html.push('<h5>' + renderMarkdownInline(line.slice(3)) + '</h5>');
+					return;
+				}
+
+				if (line.indexOf('- ') === 0) {
+					flushParagraph();
+					if (!listOpen) {
+						html.push('<ul>');
+						listOpen = true;
+					}
+					html.push('<li>' + renderMarkdownInline(line.slice(2)) + '</li>');
+					return;
+				}
+
+				paragraph.push(line.trim());
+			});
+
+			if (inCode)
+				html.push('<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>');
+			flushParagraph();
+			closeList();
+			return html.join('');
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			var style = accentColor ? ' style="border-bottom:2px solid ' + accentColor + '"' : '';
+			return '<td class="td right top"><strong' + style + '>' + escapeHtml(label) + '：</strong></td><td class="td">' + valueHtml + '</td>';
+		}
+
+		function previewTable(rows) {
+			return '<table class="table lite-ipam-preview-table">' + rows.join('') + '</table>';
+		}
+
+		function renderApiAccessDoc(data) {
+			var el = byId('api-access-doc');
+			var api = data && data.api ? data.api : {};
+			var publicBase = window.location.origin + publicApiBase;
+			var adminBase = window.location.origin + apiBase;
+			var tokenHint = api.read_token ? '已配置 Read Token' : '未配置 Read Token，外部 API 会拒绝访问';
+			var markdown = [
+				'> 当前状态：**' + (api.enabled === '1' ? '外部只读 API 已启用' : '外部只读 API 已关闭') + '**；' + tokenHint + '。',
+				'',
+				'## 访问地址',
+				'- 外部只读 API：`' + publicBase + '`',
+				'- LuCI 管理 API：`' + adminBase + '`',
+				'',
+				'## 认证方式',
+				'- Query 参数：`token=YOUR_READ_TOKEN`',
+				'- 请求头：`X-LITE-IPAM-TOKEN: YOUR_READ_TOKEN`',
+				'- Bearer：`Authorization: Bearer YOUR_READ_TOKEN`',
+				'',
+				'## 常用接口',
+				'- `GET /status`：查看节点状态、计数器与最近游标。',
+				'- `GET /sync/cursor`：获取当前增量同步游标。',
+				'- `GET /sync/batch`：按 `hosts_since`、`subnets_since`、`leases_since`、`events_after_id` 拉取增量数据。',
+				'- `GET /hosts`、`GET /subnets`、`GET /leases`、`GET /events`：获取分页列表。',
+				'- 导出接口仅在 LuCI 管理 API 中提供；外部同步建议使用 `/sync/batch` 或分页列表接口。',
+				'- 租约同步、子网写入同步、备份和导出都属于显式动作，不会因为设置页刷新页面数据而自动执行。',
+				'',
+				'## 分页参数',
+				'- `limit`：单次返回数量，默认 `' + (api.default_page_size || '100') + '`，最大 `' + (api.max_page_size || '500') + '`。',
+				'- `offset`：分页偏移量，列表接口从 `0` 开始。',
+				'',
+				'---',
+				'',
+				'## curl 示例',
+				'```sh',
+				'curl -H "X-LITE-IPAM-TOKEN: YOUR_READ_TOKEN" "' + publicBase + '/sync/batch?hosts_since=2026-06-01T00:00:00&subnets_since=2026-06-01T00:00:00&leases_since=2026-06-01T00:00:00&events_after_id=0&limit=' + (api.default_page_size || '100') + '"',
+				'```'
+			].join('\n');
+			el.innerHTML = renderMarkdownDoc(markdown);
+			byId('api-config-json').textContent = JSON.stringify(api || {}, null, 2);
+		}
+
+		function clearFieldErrors() {
+			fieldIds.forEach(function(id) {
+				var el = byId(id);
+				var field = fieldContainer(el);
+				var valueField = el && el.parentNode;
+				var errorNode;
+				if (!field)
+					return;
+				field.classList.remove('lite-ipam-field-error');
+				errorNode = valueField && valueField.querySelector('.lite-ipam-inline-error');
+				if (errorNode)
+					errorNode.remove();
+			});
+		}
+
+		function applyFailedFieldErrors(failedItems) {
+			(failedItems || []).forEach(function(item) {
+				var el = byId(item.key);
+				var field = fieldContainer(el);
+				var valueField = el && el.parentNode;
+				var errorNode;
+				if (!field || !valueField)
+					return;
+				field.classList.add('lite-ipam-field-error');
+				errorNode = document.createElement('div');
+				errorNode.className = 'lite-ipam-inline-error';
+				errorNode.textContent = item.error || item.option || '保存失败';
+				valueField.appendChild(errorNode);
+			});
+		}
+
+		function snapshotOfCurrentFields() {
+			var snapshot = {};
+			fieldIds.forEach(function(id) {
+				var el = byId(id);
+				if (!el)
+					return;
+				snapshot[id] = String(el.value || '');
+			});
+			return snapshot;
+		}
+
+		function dirtyFields() {
+			var snapshot = snapshotOfCurrentFields();
+			var dirty = [];
+			fieldIds.forEach(function(id) {
+				if (snapshot[id] == null)
+					return;
+				if (!initialSnapshot || snapshot[id] !== initialSnapshot[id])
+					dirty.push(id);
+			});
+			return dirty;
+		}
+
+		function settingsGroupLabel(group) {
+			if (group === 'basic')
+				return '基础配置';
+			if (group === 'backup')
+				return '备份策略';
+			if (group === 'maintenance')
+				return '维护策略';
+			if (group === 'api')
+				return 'API 接入';
+			return group;
+		}
+
+		function updateDirtyUi() {
+			var dirty = dirtyFields();
+			var dirtyMap = {};
+			var dirtyGroups = [];
+			dirty.forEach(function(id) { dirtyMap[id] = true; });
+			fieldIds.forEach(function(id) {
+				var field = fieldContainer(byId(id));
+				if (!field)
+					return;
+				field.classList.toggle('lite-ipam-field-dirty', !!dirtyMap[id]);
+			});
+			Object.keys(groupFieldMap).forEach(function(group) {
+				var count = groupFieldMap[group].filter(function(id) { return !!dirtyMap[id]; }).length;
+				var badge = byId('badge-' + group);
+				if (count)
+					dirtyGroups.push(settingsGroupLabel(group) + ' ' + count + ' 项');
+				if (!badge)
+					return;
+				badge.className = 'lite-ipam-pill-mini' + (count ? ' dirty' : '');
+				badge.textContent = count ? ('已修改 ' + count) : '未修改';
+			});
+			byId('settings-savebar').classList.toggle('dirty', dirty.length > 0);
+			byId('settings-dirty-text').innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell('待保存项', escapeHtml(dirty.length), '#1d4ed8') +
+					previewCell('涉及分组', escapeHtml(dirtyGroups.length ? dirtyGroups.join(' / ') : '无'), '#15803d') +
+					previewCell('保存方式', '统一保存<div class="lite-ipam-help">保存后会重新校验数据目录和相关选项</div>', '#b45309') +
+				'</tr>'
+			]);
+		}
+
+		function activateSettingsTab(name) {
+			Array.prototype.forEach.call(document.querySelectorAll('#settings-tabs li'), function(tab) {
+				tab.className = tab.getAttribute('data-tab') === name ? 'cbi-tab' : 'cbi-tab-disabled';
+			});
+			Array.prototype.forEach.call(document.querySelectorAll('.lite-ipam-setting-panel'), function(panel) {
+				panel.hidden = panel.getAttribute('data-panel') !== name;
+			});
+		}
+
+		function fillSettings(data) {
+			fieldIds.forEach(function(id) {
+				var el = byId(id);
+				var parts = id.split('_');
+				var group = parts.shift();
+				var key = parts.join('_');
+				if (!el)
+					return;
+				if (data[group] && data[group][key] != null)
+					el.value = String(data[group][key]);
+			});
+			renderApiAccessDoc(data);
+			updateConditionalFields();
+			initialSnapshot = snapshotOfCurrentFields();
+			updateDirtyUi();
+		}
+
+		function collectSettings() {
+			var body = {};
+			fieldIds.forEach(function(id) {
+				var el = byId(id);
+				if (el)
+					body[id] = el.value;
+			});
+			return body;
+		}
+
+		function validateDataRoot(value, enabled) {
+			var dangerousRoots = { '/': true, '/etc': true, '/tmp': true, '/var': true, '/root': true };
+			value = String(value || '').trim();
+			if (!value) {
+				if (enabled !== '1')
+					return null;
+				return '数据目录不能为空，启用服务时必须指定存储目录。';
+			}
+			if (value.charAt(0) !== '/')
+				return '数据目录必须是绝对路径，例如 /mnt/sata/lite-ipam。';
+			if (dangerousRoots[value])
+				return '数据目录不能使用系统关键目录。';
+			return null;
+		}
+
+		function summarizeStorageValidation(result, storage) {
+			var lines = [];
+			var initialization = result && result.initialization;
+			var integration = result && result.integration;
+			if (result && result.message)
+				lines.push('保存结果：' + result.message);
+			if (initialization && initialization.needed) {
+				lines.push(initialization.ok ? '已自动初始化存储目录。' : '已尝试自动初始化，但初始化失败。');
+				if (initialization.trigger || initialization.reason)
+					lines.push('触发自动初始化条件：' + (initialization.trigger || initialization.reason));
+				if (!initialization.ok && initialization.detail)
+					lines.push('初始化失败详情：' + initialization.detail);
+			}
+			if (integration && integration.needed) {
+				if (integration.dnsmasq)
+					lines.push((integration.dnsmasq.ok ? 'dnsmasq hosts 联动：已完成。' : 'dnsmasq hosts 联动：失败。') + (integration.dnsmasq.message ? ' ' + integration.dnsmasq.message : ''));
+				if (integration.hook)
+					lines.push((integration.hook.ok ? '租约 hook 联动：已完成。' : '租约 hook 联动：失败。') + (integration.hook.message ? ' ' + integration.hook.message : ''));
+			}
+			if (!storage)
+				return { type: 'ok', title: '设置已保存', lines: lines.length ? lines : ['设置已保存。'] };
+			if (integration && integration.attempted && integration.dnsmasq && !integration.dnsmasq.ok)
+				return { type: 'bad', title: '设置已保存，但 dnsmasq hosts 联动失败', lines: lines };
+			if (integration && integration.attempted && integration.hook && !integration.hook.ok)
+				return { type: 'bad', title: '设置已保存，但租约 hook 联动失败', lines: lines };
+			if (initialization && initialization.needed && !initialization.ok)
+				return { type: 'warn', title: '设置已保存，但自动初始化失败', lines: lines };
+			if (!storage.configured)
+				return { type: 'warn', title: '设置已保存，但尚未配置数据目录', lines: lines };
+			if (!storage.data_root_exists)
+				return { type: 'warn', title: '设置已保存，但目录还不存在', lines: lines };
+			if (!storage.data_root_writable)
+				return { type: 'bad', title: '设置已保存，但目录不可写', lines: lines };
+			if (!storage.db_exists)
+				return { type: 'warn', title: '设置已保存，数据库未就绪', lines: lines };
+			if (!storage.meta_exists)
+				return { type: 'warn', title: '设置已保存，初始化信息缺失', lines: lines };
+			if (!lines.length)
+				lines.push('设置已保存。详细存储状态可在概览页查看。');
+			return { type: 'ok', title: '设置已保存', lines: lines };
+		}
+
+		function loadSettings(options) {
+			options = options || {};
+			if (!options.preserveMessage)
+				clearPageMessage();
+			clearFieldErrors();
+			return fetchJson('/settings').then(function(settings) {
+				fillSettings(settings);
+				if (!options.silent)
+					setPageMessage('ok', '配置已载入', ['可以直接修改任意分组后统一保存。']);
+				return { settings: settings };
+			});
+		}
+
+		function saveSettings() {
+			var settings = collectSettings();
+			var dataRootError = validateDataRoot(settings.core_data_root, settings.core_enabled);
+			clearFieldErrors();
+			if (dataRootError) {
+				applyFailedFieldErrors([{ key: 'core_data_root', error: dataRootError }]);
+				setPageMessage('bad', '设置校验失败', [dataRootError]);
+				return;
+			}
+			setSaving(true);
+			setPageMessage('notice', '正在保存设置', ['正在提交设置，请稍候...']);
+			postForm('/settings/save', settings).then(function(result) {
+				return loadSettings({ preserveMessage: true, silent: true }).then(function(values) {
+					var summary = summarizeStorageValidation(result, result.validation);
+					var raw = {
+						save_result: result,
+						storage_status: result.validation,
+						integration_status: result.integration
+					};
+					setPageMessage(summary.type, summary.title, summary.lines, summary.type !== 'ok' ? raw : null);
+				});
+			}).catch(function(err) {
+				if (err && err.failed)
+					applyFailedFieldErrors(err.failed);
+				setPageMessage('bad', '设置保存失败', [err && (err.message || err.error) || String(err)], err);
+			}).then(function() {
+				setSaving(false);
+			});
+		}
+
+		fieldIds.forEach(function(id) {
+			var el = byId(id);
+			if (!el)
+				return;
+			el.addEventListener('input', updateDirtyUi);
+			el.addEventListener('change', function() {
+				updateConditionalFields();
+				updateDirtyUi();
+			});
+		});
+
+		Array.prototype.forEach.call(document.querySelectorAll('#settings-tabs li'), function(tab) {
+			tab.addEventListener('click', function(event) {
+				event.preventDefault();
+				activateSettingsTab(tab.getAttribute('data-tab'));
+			});
+		});
+
+		byId('global-save').addEventListener('click', function(event) {
+			event.preventDefault();
+			saveSettings();
+		});
+
+		byId('global-reload').addEventListener('click', function(event) {
+			event.preventDefault();
+			setPageMessage('notice', '正在刷新页面数据', ['正在读取当前配置，请稍候...']);
+			loadSettings({ preserveMessage: true }).then(function() {
+				setPageMessage('ok', '页面数据已刷新', ['当前配置已经重新读取。']);
+			}).catch(function(err) {
+				setPageMessage('bad', '页面数据刷新失败', [String(err)], err);
+			});
+		});
+
+		loadSettings({ preserveMessage: false }).catch(function(err) {
+			setPageMessage('bad', '设置页加载失败', [String(err)], err);
+		});
+	})();
+</script>
+
+<%+footer%>

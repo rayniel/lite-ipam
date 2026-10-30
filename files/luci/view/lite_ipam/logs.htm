@@ -1,0 +1,274 @@
+<%+header%>
+<%+lite_ipam/style%>
+<%+lite_ipam/ui%>
+<div class="cbi-map">
+	<h2 name="content">Lite IPAM 日志</h2>
+	<div class="cbi-map-descr" id="logs-descr-text">这里集中展示 lite-ipam 最近系统日志、运行日志，以及关键状态文件的摘要。默认优先查看 logread 中 tag 为 lite-ipam 的系统日志，不会触发租约或子网同步。</div>
+	<div class="lite-ipam-shell">
+		<div class="lite-ipam-page-actions">
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'overview')%>">概览</a>
+			<button class="cbi-button cbi-button-apply" id="logs-refresh">刷新页面数据</button>
+		</div>
+
+		<div class="lite-ipam-page-message" id="logs-message"></div>
+
+		<div class="cbi-section lite-ipam-panel">
+			<h3>日志内容</h3>
+			<ul class="cbi-tabmenu" id="logs-tabs">
+				<li class="cbi-tab" data-tab="system"><a href="#">系统日志</a></li>
+				<li class="cbi-tab-disabled" data-tab="runtime"><a href="#">运行日志</a></li>
+				<li class="cbi-tab-disabled" data-tab="events"><a href="#">范围事件</a></li>
+			</ul>
+			<div id="logs-panel-system">
+				<div class="cbi-section-descr">系统日志来自 logread，建议优先用它排查程序错误与 LuCI 调用异常。</div>
+				<div id="logs-system-lines"></div>
+				<textarea id="logs-system-text" class="lite-ipam-log-box" readonly wrap="off">正在载入...</textarea>
+			</div>
+			<div id="logs-panel-runtime">
+				<div class="cbi-section-descr">运行日志来自 data_root 下的 runtime.log，适合查看持久化日志镜像。</div>
+				<div>
+					<div class="cbi-value lite-ipam-field">
+						<label class="cbi-value-title" for="logs-limit">最近日志条数</label>
+						<div class="cbi-value-field"><select id="logs-limit">
+							<option value="20">20</option>
+							<option value="50" selected>50</option>
+							<option value="100">100</option>
+							<option value="200">200</option>
+						</select></div>
+					</div>
+					<div class="cbi-value lite-ipam-field">
+						<label class="cbi-value-title" for="logs-filter">关键字过滤</label>
+						<div class="cbi-value-field"><input id="logs-filter" type="text" placeholder="例如 subnet-sync / ERROR / dnsmasq" /></div>
+					</div>
+					<div class="cbi-value lite-ipam-field">
+						<label class="cbi-value-title" for="logs-auto-refresh">自动刷新日志</label>
+						<div class="cbi-value-field"><input id="logs-auto-refresh" type="checkbox" /></div>
+					</div>
+					<div class="cbi-value lite-ipam-field">
+						<label class="cbi-value-title">日志操作</label>
+						<div class="cbi-value-field"><div class="lite-ipam-actions">
+							<button class="cbi-button cbi-button-apply" id="logs-apply-filter" type="button">应用过滤</button>
+							<button class="cbi-button" id="logs-clear-filter" type="button">清除过滤</button>
+						</div></div>
+					</div>
+				</div>
+				<div id="logs-runtime-lines"></div>
+				<textarea id="logs-runtime-text" class="lite-ipam-log-box" readonly wrap="off">正在载入...</textarea>
+			</div>
+			<div id="logs-panel-events" hidden>
+				<div id="logs-events">正在载入...</div>
+			</div>
+			<div id="logs-diagnostic"></div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+	(function() {
+		var apiBase = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "api", "v1")%>';
+		var ui = window.LiteIpamUi.create({ apiBase: apiBase, messageId: 'logs-message' });
+		var autoRefreshTimer = null;
+		var activeTab = 'system';
+		var latestLogs = { system: null, runtime: null };
+		var latestEvents = null;
+
+		function fetchJson(path) {
+			return ui.fetchJson(path);
+		}
+
+		function escapeHtml(value) {
+			return ui.escapeHtml(value);
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			return ui.previewCell(label, valueHtml, accentColor);
+		}
+
+		function previewTable(rows) {
+			return ui.previewTable(rows);
+		}
+
+		function setPageMessage(type, title, lines, rawData, rawTitle, rawLines) {
+			ui.showMessage(type, title, lines, rawData, rawTitle, rawLines);
+		}
+
+		function clearPageMessage() {
+			ui.clearMessage();
+		}
+
+		function activateLogsTab(name) {
+			activeTab = name;
+			Array.prototype.forEach.call(document.querySelectorAll('#logs-tabs li'), function(tab) {
+				tab.className = tab.getAttribute('data-tab') === name ? 'cbi-tab' : 'cbi-tab-disabled';
+			});
+			document.getElementById('logs-panel-system').hidden = name !== 'system';
+			document.getElementById('logs-panel-runtime').hidden = name !== 'runtime';
+			document.getElementById('logs-panel-events').hidden = name !== 'events';
+		}
+
+		function normalizeLogRows(data) {
+			if (Array.isArray(data))
+				return data;
+			if (data && Array.isArray(data.rows))
+				return data.rows;
+			if (data && Array.isArray(data.items))
+				return data.items;
+			if (data && Array.isArray(data.list))
+				return data.list;
+			return [];
+		}
+
+		function renderLogs(data, sourceName, options) {
+			options = options || {};
+			var rows = normalizeLogRows(data);
+			var displayRows;
+			var textBox = document.getElementById(sourceName === 'runtime' ? 'logs-runtime-text' : 'logs-system-text');
+			var summaryBox = document.getElementById(sourceName === 'runtime' ? 'logs-runtime-lines' : 'logs-system-lines');
+			var keyword = (document.getElementById('logs-filter').value || '').toLowerCase();
+			if (keyword) {
+				rows = rows.filter(function(line) {
+					return String(line || '').toLowerCase().indexOf(keyword) >= 0;
+				});
+			}
+			displayRows = rows.slice().reverse();
+			summaryBox.innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell('日志来源', escapeHtml(data.source || '-'), '#1d4ed8') +
+					previewCell('位置', escapeHtml(data.path || '-'), '#15803d') +
+					previewCell('显示行数', escapeHtml(rows.length), '#b45309') +
+				'</tr>'
+			]);
+			textBox.value = displayRows.length ? displayRows.join('\n') : '暂无日志内容';
+			ui.renderDiagnostic('logs-diagnostic', data, '诊断视图：' + (sourceName === 'runtime' ? '运行日志' : '系统日志') + ' API 响应', [
+				'日志来源：' + (data.source || '-'),
+				'接口返回行数：' + rows.length
+			]);
+			ui.showMessage(data.ok ? 'ok' : 'warn', data.ok ? '日志已载入' : '日志为空', [
+				'当前来源：' + (data.source || '-'),
+				(keyword ? ('过滤后显示 ' + rows.length + ' 行') : (data.message || ('共读取 ' + rows.length + ' 行日志')))
+			]);
+			if (options.announceSuccess)
+				ui.showMessage(data.ok ? 'ok' : 'warning', data.ok ? '已刷新' : '日志为空', [
+					'当前来源：' + (data.source || '-'),
+					(keyword ? ('过滤后显示 ' + rows.length + ' 行') : (data.message || ('共读取 ' + rows.length + ' 行日志')))
+				]);
+			else
+				ui.clearMessage();
+		}
+
+		function renderEvents(data) {
+			var rows = Array.isArray(data) ? data : ((data && (data.rows || data.items || data.list)) || []);
+			latestEvents = rows;
+			ui.renderDiagnostic('logs-diagnostic', data, '诊断视图：范围事件 API 响应', [
+				'事件条目：' + rows.length,
+				'当前面板：范围事件'
+			]);
+			document.getElementById('logs-events').innerHTML = rows.length ? '<table id="status_events" class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">时间</th><th class="th">事件</th><th class="th">子网</th><th class="th">对象</th></tr>' + rows.map(function(row) {
+				return '<tr class="tr"><td class="td">' + escapeHtml(row.created_at || '-') + '</td><td class="td">' + escapeHtml(row.event_type || 'event') + '</td><td class="td">' + escapeHtml(row.subnet_id || '-') + '</td><td class="td">' + escapeHtml(row.hostname || row.ip || row.mac || row.detail || '-') + '</td></tr>';
+			}).join('') + '</tbody></table>' : '<table id="status_events" class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">时间</th><th class="th">事件</th><th class="th">子网</th><th class="th">对象</th></tr><tr class="tr placeholder"><td class="td" colspan="4"><em>暂无范围事件</em></td></tr></tbody></table>';
+		}
+
+		function loadLogs(options) {
+			options = options || {};
+			var limit = document.getElementById('logs-limit').value || '50';
+			var logSource = activeTab === 'runtime' ? 'runtime' : 'system';
+			ui.showMessage('notice', '正在载入', ['正在读取最近日志，请稍候...']);
+			if (options.announceLoading)
+				ui.showMessage('notice', '正在读取日志', ['正在读取最近日志，请稍候...']);
+			else if (!options.announceSuccess)
+				ui.clearMessage();
+			return fetchJson('/logs/recent?limit=' + encodeURIComponent(limit) + '&source=' + encodeURIComponent(logSource)).then(function(result) {
+				latestLogs[logSource] = result;
+				renderLogs(result, logSource, options);
+			});
+		}
+
+		function loadEvents(options) {
+			options = options || {};
+			ui.showMessage('notice', '正在载入', ['正在读取最近范围事件，请稍候...']);
+			if (options.announceLoading)
+				ui.showMessage('notice', '正在读取事件', ['正在读取最近范围事件，请稍候...']);
+			else if (!options.announceSuccess)
+				ui.clearMessage();
+			return fetchJson('/events?limit=30').then(function(result) {
+				renderEvents(result);
+				if (options.announceSuccess)
+					ui.showMessage('ok', '已刷新', ['最近范围事件已更新。']);
+				else
+					ui.clearMessage();
+			});
+		}
+
+		function loadActiveTab(options) {
+			if (activeTab === 'events')
+				return loadEvents(options);
+			return loadLogs(options);
+		}
+
+		function syncAutoRefresh() {
+			if (autoRefreshTimer) {
+				clearInterval(autoRefreshTimer);
+				autoRefreshTimer = null;
+			}
+			if (document.getElementById('logs-auto-refresh').checked) {
+				autoRefreshTimer = setInterval(function() {
+					loadActiveTab({ announceLoading: false, announceSuccess: false }).catch(function(err) {
+						setPageMessage('bad', '日志自动刷新失败', [err && (err.message || err.error) || String(err)], err, '诊断视图：日志自动刷新错误');
+					});
+				}, 5000);
+			}
+		}
+
+		document.getElementById('logs-refresh').addEventListener('click', function() {
+			loadActiveTab({ announceLoading: true, announceSuccess: true }).catch(function(err) {
+				setPageMessage('bad', '日志刷新失败', [err && (err.message || err.error) || String(err)], err, '诊断视图：日志刷新错误');
+			});
+		});
+
+		document.getElementById('logs-limit').addEventListener('change', function() {
+			if (activeTab === 'events')
+				return;
+			loadLogs({ announceLoading: true, announceSuccess: true }).catch(function(err) {
+				setPageMessage('bad', '日志读取失败', [err && (err.message || err.error) || String(err)], err, '诊断视图：日志读取错误');
+			});
+		});
+
+		document.getElementById('logs-filter').addEventListener('input', function() {
+			if (activeTab !== 'events' && latestLogs[activeTab])
+				renderLogs(latestLogs[activeTab], activeTab, { announceSuccess: false });
+		});
+
+		document.getElementById('logs-apply-filter').addEventListener('click', function() {
+			if (activeTab !== 'events' && latestLogs[activeTab])
+				renderLogs(latestLogs[activeTab], activeTab, { announceSuccess: false });
+		});
+
+		document.getElementById('logs-clear-filter').addEventListener('click', function() {
+			document.getElementById('logs-filter').value = '';
+			if (activeTab !== 'events' && latestLogs[activeTab])
+				renderLogs(latestLogs[activeTab], activeTab, { announceSuccess: false });
+		});
+
+		document.getElementById('logs-auto-refresh').addEventListener('change', function() {
+			syncAutoRefresh();
+		});
+
+		Array.prototype.forEach.call(document.querySelectorAll('#logs-tabs li'), function(tab) {
+			tab.addEventListener('click', function(e) {
+				e.preventDefault();
+				var tabName = tab.getAttribute('data-tab');
+				activateLogsTab(tabName);
+				loadActiveTab({ announceLoading: false, announceSuccess: false }).catch(function(err) {
+					setPageMessage('bad', tabName === 'events' ? '事件读取失败' : '日志读取失败', [err && (err.message || err.error) || String(err)], err, tabName === 'events' ? '诊断视图：事件读取错误' : '诊断视图：日志读取错误');
+				});
+			});
+		});
+
+		activateLogsTab('system');
+		loadActiveTab({ announceLoading: false, announceSuccess: false }).catch(function(err) {
+			setPageMessage('bad', '日志页加载失败', [err && (err.message || err.error) || String(err)], err, '诊断视图：日志页加载错误');
+		});
+	})();
+</script>
+
+<%+footer%>

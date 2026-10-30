@@ -1,0 +1,736 @@
+<%+header%>
+<%+lite_ipam/style%>
+<%+lite_ipam/ui%>
+<style type="text/css">
+	.lite-ipam-selection-summary { margin-bottom: 12px; padding: 8px 0; border-bottom: 1px solid #eee; font-size: 12px; line-height: 1.5; }
+	.lite-ipam-preview-block { margin-top: 12px; }
+	.lite-ipam-preview-block h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+	.lite-ipam-preview-result { margin-top: 8px; }
+	.lite-ipam-table-wrap { overflow: auto; }
+	.lite-ipam-table { min-width: 920px; }
+	.lite-ipam-candidate-table { min-width: 720px; }
+	.lite-ipam-table th, .lite-ipam-table td { vertical-align: top; }
+	.lite-ipam-table textarea { min-height: 58px; resize: vertical; }
+	.lite-ipam-table input, .lite-ipam-table textarea { width: 100%; box-sizing: border-box; }
+</style>
+
+<div class="cbi-map">
+	<h2 name="content">Lite IPAM 子网</h2>
+	<div class="cbi-map-descr" id="subnet-descr-text">这里展示已经写入数据库的子网结果。页面刷新只回读当前列表；“预览纳管结果”只做比对；“写入同步结果”才会把系统配置写进数据库。</div>
+	<div class="lite-ipam-shell">
+		<div class="lite-ipam-page-actions">
+			<button class="cbi-button cbi-button-apply" id="subnet-sync">写入同步结果</button>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'settings')%>">设置</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'overview')%>">返回概览</a>
+			<button class="cbi-button" id="subnet-refresh">刷新页面数据</button>
+		</div>
+
+		<div class="lite-ipam-page-message" id="subnet-message"></div>
+
+		<div class="cbi-section">
+			<h3>同步概览</h3>
+			<div id="subnet-stats"></div>
+		</div>
+
+		<div class="cbi-section lite-ipam-panel">
+			<h3>接口候选</h3>
+			<div class="cbi-section-descr">这里只列出已启用 DHCP 服务的接口；勾选即纳管，不勾选即不纳管；预览与写入同步只会处理已勾选接口。</div>
+			<div class="lite-ipam-actions">
+				<button class="cbi-button" id="subnet-select-all" type="button">全选</button>
+				<button class="cbi-button" id="subnet-clear-all" type="button">清空</button>
+				<button class="cbi-button cbi-button-apply" id="subnet-preview" type="button">预览纳管结果</button>
+			</div>
+			<div class="lite-ipam-preview-block">
+				<h4>选择摘要</h4>
+				<div class="lite-ipam-selection-summary" id="subnet-selection-summary">正在读取接口选择...</div>
+			</div>
+			<div id="subnet-candidate-list"></div>
+			<div class="lite-ipam-preview-block">
+				<h4>预览结果</h4>
+				<div id="subnet-preview-result" class="lite-ipam-preview-result">尚未执行预览。</div>
+			</div>
+		</div>
+
+		<div class="cbi-section lite-ipam-panel">
+			<h3>已同步子网列表</h3>
+			<div class="cbi-section-descr">点击编辑后，会把当前子网载入下方表单，再统一保存元数据。</div>
+			<div class="lite-ipam-table-wrap"><table class="table cbi-section-table lite-ipam-table" id="subnets-table"></table></div>
+			<div id="subnet-editor-wrap" hidden>
+				<div class="cbi-value">
+					<label class="cbi-value-title">当前编辑</label>
+					<div class="cbi-value-field" id="subnet-editor-summary">未选择子网</div>
+				</div>
+				<div class="cbi-value lite-ipam-field">
+					<label class="cbi-value-title" for="subnet-editor-name">显示名称</label>
+					<div class="cbi-value-field"><input id="subnet-editor-name" type="text" /></div>
+				</div>
+				<div class="cbi-value lite-ipam-field">
+					<label class="cbi-value-title" for="subnet-editor-comment">备注</label>
+					<div class="cbi-value-field"><textarea id="subnet-editor-comment" rows="3"></textarea></div>
+				</div>
+				<div class="cbi-value">
+					<label class="cbi-value-title">编辑操作</label>
+					<div class="cbi-value-field"><div class="lite-ipam-actions">
+						<button class="cbi-button cbi-button-apply" id="subnet-editor-save" type="button">保存元数据</button>
+						<button class="cbi-button" id="subnet-editor-cancel" type="button">取消编辑</button>
+					</div></div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+	(function() {
+		var apiBase = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "api", "v1")%>';
+		var ui = window.LiteIpamUi.create({ apiBase: apiBase, messageId: 'subnet-message' });
+		var settingsUrl = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "settings")%>';
+		var subnets = [];
+		var subnetCandidates = [];
+		var selectedCandidateMap = {};
+		var selectionStateHydrated = false;
+		var selectionSaveChain = Promise.resolve();
+		var selectionSaveGeneration = 0;
+		var lastRaw = null;
+		var lastPreview = null;
+		var lastPreviewContext = null;
+		var editingSubnetId = null;
+		var subnetEditor = {
+			wrap: document.getElementById('subnet-editor-wrap'),
+			summary: document.getElementById('subnet-editor-summary'),
+			name: document.getElementById('subnet-editor-name'),
+			comment: document.getElementById('subnet-editor-comment')
+		};
+
+		function escapeHtml(value) {
+			return ui.escapeHtml(value);
+		}
+
+		function setDescrText(text) {
+			document.getElementById('subnet-descr-text').textContent = text;
+		}
+
+		function renderStatusHtml(type, title, lines, rawData) {
+			return ui.alertHtml(type, title, lines, rawData);
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			return ui.previewCell(label, valueHtml, accentColor);
+		}
+
+		function previewTable(rows) {
+			return ui.previewTable(rows);
+		}
+
+		function setPageStatus(type, title, lines, rawData) {
+			ui.showMessage(type, title, lines, rawData);
+		}
+
+		function clearPageStatus() {
+			ui.clearMessage();
+		}
+
+		function renderPreviewResult(type, title, lines, rawData) {
+			var el = document.getElementById('subnet-preview-result');
+			var previewLines = (lines && lines.length) ? lines.join(' / ') : '-';
+			var previewCount = rawData && rawData.rows && rawData.rows.length ? rawData.rows.length : 0;
+			var html = previewTable([
+				'<tr class="tr">' +
+					previewCell('预览状态', escapeHtml(title || '-'), type === 'bad' ? '#b91c1c' : (type === 'ok' ? '#15803d' : '#1d4ed8')) +
+					previewCell('结果摘要', escapeHtml(previewLines), '#b45309') +
+					previewCell('变更条目', escapeHtml(previewCount)) +
+				'</tr>'
+			]);
+			if (rawData && rawData.rows && rawData.rows.length) {
+				html += '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">接口</th><th class="th">变更</th><th class="th">CIDR</th><th class="th">VLAN</th><th class="th">网关</th><th class="th">地址池</th><th class="th">说明</th></tr>' + rawData.rows.map(function(row) {
+					var changePill = '<span class="lite-ipam-pill soft">无变化</span>';
+					if (row.change_type === 'added')
+						changePill = '<span class="lite-ipam-pill ok">将新增</span>';
+					else if (row.change_type === 'updated')
+						changePill = '<span class="lite-ipam-pill warn">将更新</span>';
+					return '<tr class="tr"><td class="td">' + escapeHtml(row.interface_name || '-') + '</td><td class="td">' + changePill + '</td><td class="td">' + escapeHtml(row.cidr || '-') + '</td><td class="td">' + escapeHtml(row.vlan_id || '-') + '</td><td class="td">' + escapeHtml(row.gateway || '-') + '</td><td class="td">' + escapeHtml(row.range_start ? (row.range_start + ' - ' + (row.range_end || '-')) : '-') + '</td><td class="td">' + escapeHtml((row.existing_id ? '已存在 ID ' + row.existing_id : '') + (row.changed_fields && row.changed_fields.length ? ' 变更字段 ' + row.changed_fields.join(', ') : '')) + '</td></tr>';
+				}).join('') + '</tbody></table>';
+			}
+			if (rawData)
+				html += ui.rawJsonBlock(rawData, '诊断视图：子网预览 JSON', [
+					'当前变更条目：' + previewCount,
+					'预览结果仅用于比对，不会写入数据库。'
+				]);
+			el.innerHTML = html;
+		}
+
+		function commonGuidanceLines(message) {
+			return ui.guidanceLines(message, { scope: '预览或同步子网' });
+		}
+
+		function selectedInterfacesFrom(map) {
+			return Object.keys(map || {})
+				.filter(function(name) { return !!map[name]; })
+				.map(function(name) { return normalizeInterfaceName(name); })
+				.filter(function(name) { return !!name; })
+				.sort();
+		}
+
+		function normalizeInterfaceName(name) {
+			return String(name == null ? '' : name).trim();
+		}
+
+		function normalizeInterfaces(input) {
+			var normalized = [];
+			var seen = {};
+			function append(name) {
+				name = normalizeInterfaceName(name);
+				if (!name || seen[name])
+					return;
+				seen[name] = true;
+				normalized.push(name);
+			}
+			if (Array.isArray(input)) {
+				input.forEach(append);
+				return normalized;
+			}
+			if (typeof input === 'string') {
+				if (input.trim())
+					input.trim().split(/\s+/).forEach(append);
+				return normalized;
+			}
+			if (input && typeof input === 'object') {
+				Object.keys(input)
+					.sort(function(a, b) { return Number(a) - Number(b); })
+					.map(function(key) { return input[key]; })
+					.forEach(append);
+				return normalized;
+			}
+			return normalized;
+		}
+
+		function isSelectedFlag(value) {
+			if (value === true || value === 1)
+				return true;
+			if (typeof value === 'string') {
+				var lowered = value.toLowerCase();
+				return lowered === '1' || lowered === 'true' || lowered === 'yes' || lowered === 'on';
+			}
+			return false;
+		}
+
+		function syncAppliedSelectionWithCandidates() {
+			if (selectionStateHydrated) {
+				selectedCandidateMap = subnetCandidates.reduce(function(acc, candidate) {
+					var interfaceName = normalizeInterfaceName(candidate.interface_name);
+					if (interfaceName && selectedCandidateMap[interfaceName])
+						acc[interfaceName] = true;
+					return acc;
+				}, {});
+				return;
+			}
+			selectedCandidateMap = subnetCandidates.reduce(function(acc, candidate) {
+				var interfaceName = normalizeInterfaceName(candidate.interface_name);
+				if (!interfaceName)
+					return acc;
+				if (selectedCandidateMap[interfaceName] || isSelectedFlag(candidate.selected))
+					acc[interfaceName] = true;
+				return acc;
+			}, {});
+		}
+
+		function hasScopedSelection() {
+			return selectedInterfacesFrom(selectedCandidateMap).length > 0;
+		}
+
+		function currentSelectionRequest() {
+			var interfaces = selectedInterfacesFrom(selectedCandidateMap);
+			var body = {};
+			interfaces.forEach(function(interfaceName, index) {
+				body['interface_' + index] = interfaceName;
+			});
+			if (interfaces.length === 1)
+				body.interface = interfaces[0];
+			return { interfaces: interfaces, body: body };
+		}
+
+		function findSubnetById(subnetId) {
+			for (var index = 0; index < subnets.length; index++) {
+				if (String(subnets[index].id) === String(subnetId))
+					return subnets[index];
+			}
+			return null;
+		}
+
+		function fetchJson(path) {
+			return ui.fetchJson(path, {
+				cache: 'no-store',
+				headers: {
+					'Cache-Control': 'no-cache, no-store, must-revalidate',
+					'Pragma': 'no-cache'
+				}
+			});
+		}
+
+		function postForm(path, body) {
+			return ui.postForm(path, body);
+		}
+
+		function renderStats(rows) {
+			var syncedCount = 0;
+			var namedCount = 0;
+			var vlanCount = {};
+			rows.forEach(function(subnet) {
+				if (subnet.sync_status)
+					syncedCount += 1;
+				if (subnet.display_name)
+					namedCount += 1;
+				if (subnet.vlan_id != null && subnet.vlan_id !== '')
+					vlanCount[String(subnet.vlan_id)] = true;
+			});
+			var cards = [
+				{ label: '子网总数', value: rows.length, meta: '当前同步结果' },
+				{ label: '已命名子网', value: namedCount, meta: '已配置显示名称' },
+				{ label: 'VLAN 数量', value: Object.keys(vlanCount).length, meta: '不同 VLAN 统计' },
+				{ label: '同步状态字段', value: syncedCount, meta: '包含 sync_status 的记录' }
+			];
+			document.getElementById('subnet-stats').innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell(cards[0].label, escapeHtml(cards[0].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[0].meta) + '</div>', '#1d4ed8') +
+					previewCell(cards[1].label, escapeHtml(cards[1].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[1].meta) + '</div>', '#15803d') +
+					previewCell(cards[2].label, escapeHtml(cards[2].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[2].meta) + '</div>', '#b45309') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell(cards[3].label, escapeHtml(cards[3].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[3].meta) + '</div>') +
+					'<td class="td"></td><td class="td"></td><td class="td"></td><td class="td"></td>' +
+				'</tr>'
+			]);
+		}
+
+		function renderSubnets(rows) {
+			var el = document.getElementById('subnets-table');
+			subnets = ui.normalizeRows(rows);
+			var html = '<tbody><tr class="tr table-titles"><th class="th">启用</th><th class="th">子网</th><th class="th">地址</th><th class="th">DHCP</th><th class="th">同步</th><th class="th">备注</th><th class="th cbi-section-actions">操作</th></tr>';
+			subnets.forEach(function(subnet) {
+				var enabled = String(subnet.enabled) === '1' ? '<span class="lite-ipam-pill ok">启用</span>' : '<span class="lite-ipam-pill bad">停用</span>';
+				var subnetTitle = '<strong>' + escapeHtml(subnet.display_name || subnet.name || subnet.interface_name || '') + '</strong>';
+				var subnetMeta = 'ID ' + escapeHtml(subnet.id || '-') + ' / 接口 ' + escapeHtml(subnet.interface_name || subnet.name || '-');
+				var addressMeta = '网关 ' + escapeHtml(subnet.gateway || '-') + ' / VLAN ' + escapeHtml(subnet.vlan_id || '-');
+				var dhcpRange = subnet.range_start ? escapeHtml(subnet.range_start) + ' - ' + escapeHtml(subnet.range_end || '-') : '-';
+				var dhcpMeta = '租期 ' + escapeHtml(subnet.lease_time || '-');
+				var syncMeta = '来源 ' + escapeHtml(subnet.source || '-') + ' / 更新 ' + escapeHtml(subnet.updated_at || '-');
+				html += '<tr class="tr">' +
+					'<td class="td">' + enabled + '</td>' +
+					'<td class="td">' + subnetTitle + '<div class="lite-ipam-help">' + subnetMeta + '</div></td>' +
+					'<td class="td"><span class="lite-ipam-mono">' + escapeHtml(subnet.cidr || '-') + '</span><div class="lite-ipam-help">' + addressMeta + '</div></td>' +
+					'<td class="td"><span class="lite-ipam-mono">' + dhcpRange + '</span><div class="lite-ipam-help">' + dhcpMeta + '</div></td>' +
+					'<td class="td">' + escapeHtml(subnet.sync_status || '-') + '<div class="lite-ipam-help">' + syncMeta + '</div></td>' +
+					'<td class="td">' + escapeHtml(subnet.comment || '-') + '</td>' +
+					'<td class="td cbi-section-actions"><div class="lite-ipam-inline-actions"><button class="cbi-button" data-edit-inline="' + escapeHtml(subnet.id) + '">编辑</button></div></td>' +
+				'</tr>';
+			});
+			if (!subnets.length)
+				html += '<tr class="tr placeholder"><td class="td" colspan="7"><em>暂无同步子网，请先选择接口并执行系统同步</em></td></tr>';
+			el.innerHTML = html + '</tbody>';
+			subnets.forEach(function(subnet) {
+				var editButton = el.querySelector('button[data-edit-inline="' + subnet.id + '"]');
+				if (editButton) {
+					editButton.addEventListener('click', function() {
+						startSubnetEdit(subnet);
+					});
+				}
+			});
+			renderStats(subnets);
+		}
+
+		function stopSubnetEdit() {
+			editingSubnetId = null;
+			subnetEditor.wrap.hidden = true;
+			subnetEditor.summary.innerHTML = '未选择子网';
+			subnetEditor.name.value = '';
+			subnetEditor.comment.value = '';
+		}
+
+		function startSubnetEdit(subnet) {
+			editingSubnetId = subnet.id;
+			subnetEditor.wrap.hidden = false;
+			subnetEditor.summary.innerHTML = '子网 #' + escapeHtml(subnet.id || '-') + ' / VLAN ' + escapeHtml(subnet.vlan_id || '-') + ' / ' + escapeHtml(subnet.display_name || subnet.name || subnet.interface_name || '-');
+			subnetEditor.name.value = subnet.display_name || subnet.name || '';
+			subnetEditor.comment.value = subnet.comment || '';
+			setPageStatus('notice', '正在编辑子网', ['子网 #' + subnet.id + ' 已载入下方表单。']);
+		}
+
+		function saveInlineSubnetMeta(id) {
+			if (!id) {
+				setPageStatus('warning', '无法保存', ['当前没有选中的子网。']);
+				return;
+			}
+			postForm('/subnets/meta-save', {
+				id: id,
+				display_name: subnetEditor.name.value,
+				comment: subnetEditor.comment.value
+			}).then(function(result) {
+				setPageStatus(result.ok ? 'ok' : 'bad', result.ok ? '已保存' : '元数据保存失败', [
+					result.message || (result.ok ? '子网元数据已保存。' : '子网元数据保存失败。')
+				], result.ok ? null : result);
+				if (result.ok) {
+					stopSubnetEdit();
+					loadSubnets();
+				}
+			}).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				setPageStatus('bad', '元数据保存失败', [message], err);
+			});
+		}
+
+		function renderCandidates(rows) {
+			subnetCandidates = ui.normalizeRows(rows);
+			syncAppliedSelectionWithCandidates();
+			var el = document.getElementById('subnet-candidate-list');
+			if (!subnetCandidates.length) {
+				el.innerHTML = '<table class="table cbi-section-table lite-ipam-candidate-table"><tbody><tr class="tr table-titles"><th class="th">启用</th><th class="th">接口</th><th class="th">协议</th><th class="th">地址池</th><th class="th">租约</th><th class="th">状态</th></tr><tr class="tr placeholder"><td class="td" colspan="6"><em>没有可同步接口</em></td></tr></tbody></table>';
+				updateSelectionSummary();
+				return;
+			}
+			var html = '<div class="lite-ipam-table-wrap"><table class="table cbi-section-table lite-ipam-candidate-table"><tbody><tr class="tr table-titles">' +
+				'<th class="th">启用</th><th class="th">接口</th><th class="th">协议</th><th class="th">地址池</th><th class="th">租约</th><th class="th">状态</th>' +
+				'</tr>';
+			html += subnetCandidates.map(function(candidate) {
+				var interfaceName = normalizeInterfaceName(candidate.interface_name);
+				var selected = !!selectedCandidateMap[interfaceName];
+				var pool = (candidate.start ? 'start=' + candidate.start : '-') + (candidate.limit ? ' / limit=' + candidate.limit : '');
+				var state = 'DHCP 已启用';
+				return '<tr class="tr" data-interface="' + escapeHtml(interfaceName) + '">' +
+					'<td class="td"><input type="checkbox" data-toggle-interface="' + escapeHtml(interfaceName) + '"' + (selected ? ' checked' : '') + ' /></td>' +
+					'<td class="td">' + escapeHtml(interfaceName || '(unknown)') + '</td>' +
+					'<td class="td">' + escapeHtml(candidate.proto || '-') + '</td>' +
+					'<td class="td">' + escapeHtml(pool) + '</td>' +
+					'<td class="td">' + escapeHtml(candidate.lease_time || '-') + '</td>' +
+					'<td class="td">' + escapeHtml(state) + '</td>' +
+				'</tr>';
+			}).join('');
+			html += '</tbody></table></div>';
+			el.innerHTML = html;
+			Array.prototype.forEach.call(document.querySelectorAll('[data-toggle-interface]'), function(button) {
+				button.addEventListener('change', function() {
+					toggleCandidate(button.getAttribute('data-toggle-interface'), button.checked);
+				});
+			});
+			updateSelectionSummary();
+		}
+
+		function updateSelectionSummary() {
+			var appliedInterfaces = selectedInterfacesFrom(selectedCandidateMap);
+			var summaryRows = [
+				['候选接口', subnetCandidates.length, '仅列出已启用 DHCP 服务的接口'],
+				['已启用接口', appliedInterfaces.length, appliedInterfaces.length ? appliedInterfaces.join(', ') : '未选择接口'],
+				['执行规则', appliedInterfaces.length ? '可以预览或同步' : '需要先勾选接口', '只有勾选接口会参与预览和同步']
+			];
+			document.getElementById('subnet-selection-summary').innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell(summaryRows[0][0], escapeHtml(summaryRows[0][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[0][2]) + '</div>', '#1d4ed8') +
+					previewCell(summaryRows[1][0], escapeHtml(summaryRows[1][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[1][2]) + '</div>', '#15803d') +
+					previewCell(summaryRows[2][0], escapeHtml(summaryRows[2][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[2][2]) + '</div>', '#b45309') +
+				'</tr>'
+			]);
+		}
+
+		function selectionStatusLines(interfaceNames) {
+			var interfaces = normalizeInterfaces(interfaceNames);
+			return [
+				'已启用接口数：' + interfaces.length,
+				'接口列表：' + (interfaces.length ? interfaces.join(', ') : '未选择接口')
+			];
+		}
+
+		function setAppliedSelection(interfaceNames, title, lines) {
+			selectionStateHydrated = true;
+			selectedCandidateMap = (interfaceNames || []).reduce(function(acc, name) {
+				acc[name] = true;
+				return acc;
+			}, {});
+			renderCandidates(subnetCandidates);
+			setPageStatus('ok', title, lines);
+		}
+
+		function saveSelection(interfaceNames, successTitle, successLines) {
+			var body = {};
+			var requestedInterfaces = normalizeInterfaces(interfaceNames);
+			var appliedSuccessLines = Array.isArray(successLines) && successLines.length ? successLines.slice() : selectionStatusLines(requestedInterfaces);
+			selectionStateHydrated = true;
+			requestedInterfaces.forEach(function(interfaceName, index) {
+				body['interface_' + index] = interfaceName;
+			});
+			if (Object.keys(body).length === 1)
+				body.interface = body.interface_0;
+			return postForm('/subnets/selection/save', body).then(function(result) {
+				return fetchJson('/subnets/selection').then(function(selection) {
+					var returnedInterfaces = normalizeInterfaces(selection.interfaces);
+					if (interfacesFingerprint(returnedInterfaces) !== interfacesFingerprint(requestedInterfaces)) {
+						var mismatchError = {
+							ok: false,
+							error: 'selection persisted value mismatch',
+							requested_interfaces: requestedInterfaces,
+							persisted_interfaces: returnedInterfaces,
+							save_result: result,
+							selection_result: selection
+						};
+						selectedCandidateMap = returnedInterfaces.reduce(function(acc, name) {
+							acc[name] = true;
+							return acc;
+						}, {});
+						renderCandidates(subnetCandidates);
+						setPageStatus('bad', '接口选择未持久化', [
+							'已提交：' + (requestedInterfaces.length ? requestedInterfaces.join(', ') : '(空)'),
+							'读回：' + (returnedInterfaces.length ? returnedInterfaces.join(', ') : '(空)'),
+							'本次保存结果与读回不一致。'
+						], mismatchError);
+						throw mismatchError;
+					}
+					selectedCandidateMap = returnedInterfaces.reduce(function(acc, name) {
+						acc[name] = true;
+						return acc;
+					}, {});
+					renderCandidates(subnetCandidates);
+					setPageStatus('ok', successTitle || '接口选择已保存', appliedSuccessLines.concat([
+						result.message || '接口选择已保存。'
+					]).concat(autoRefreshLines(result)), result.auto ? result : null);
+					return result;
+				});
+			});
+		}
+
+		function queueSelectionSave(interfaceNames, successTitle, successLines) {
+			var requestId = ++selectionSaveGeneration;
+			var normalizedInterfaces = normalizeInterfaces(interfaceNames);
+			var queued = selectionSaveChain.catch(function() {
+				return null;
+			}).then(function() {
+				if (requestId !== selectionSaveGeneration)
+					return null;
+				return saveSelection(normalizedInterfaces, successTitle, successLines);
+			});
+			selectionSaveChain = queued;
+			return queued.then(function(result) {
+				if (requestId !== selectionSaveGeneration)
+					return null;
+				return result;
+			}, function(err) {
+				if (requestId !== selectionSaveGeneration)
+					return null;
+				throw err;
+			});
+		}
+
+		function toggleCandidate(interfaceName, checked) {
+			interfaceName = normalizeInterfaceName(interfaceName);
+			if (!interfaceName)
+				return;
+			var nextInterfaces;
+			selectionStateHydrated = true;
+			if (checked)
+				selectedCandidateMap[interfaceName] = true;
+			else
+				delete selectedCandidateMap[interfaceName];
+			renderCandidates(subnetCandidates);
+			nextInterfaces = selectedInterfacesFrom(selectedCandidateMap);
+			queueSelectionSave(nextInterfaces, '接口选择已保存', selectionStatusLines(nextInterfaces)).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				setPageStatus('bad', '接口选择保存失败', [message], err);
+			});
+		}
+
+		function interfacesFingerprint(interfaces) {
+			return normalizeInterfaces(interfaces).slice().sort().join(',');
+		}
+
+		function autoRefreshLines(result) {
+			var lines = [];
+			var auto = result && result.auto;
+			if (!auto)
+				return lines;
+			if (auto.subnet_sync) {
+				lines.push(auto.subnet_sync.ok
+					? ('已自动同步子网' + (auto.subnet_sync.records ? '：' + auto.subnet_sync.records + ' 条' : '。'))
+					: ('自动同步未完成：' + (auto.subnet_sync.message || auto.subnet_sync.error || '请检查设置页的数据目录')));
+			}
+			if (auto.lease_hook) {
+				lines.push(auto.lease_hook.ok
+					? '已自动应用 dnsmasq 租约 hook。'
+					: ('租约 hook 未完成：' + (auto.lease_hook.message || auto.lease_hook.error || '请检查 dnsmasq 状态')));
+			}
+			return lines;
+		}
+
+		function describeInterfaces(interfaces) {
+			return interfaces && interfaces.length ? interfaces.join(', ') : '未选择接口';
+		}
+
+		function previewSummaryText(result) {
+			if (!result || !result.summary)
+				return '没有可用的预览摘要';
+			return '将新增 ' + (result.summary.added || 0) + '，将更新 ' + (result.summary.updated || 0) + '，无变化 ' + (result.summary.unchanged || 0);
+		}
+
+		function hasFreshPreview(request) {
+			return !!(lastPreviewContext && lastPreviewContext.fingerprint === interfacesFingerprint(request.interfaces));
+		}
+
+		function confirmSyncRequest(request) {
+			var lines = [
+				'确认执行子网同步？',
+				'',
+				'同步范围：' + describeInterfaces(request.interfaces)
+			];
+			if (hasFreshPreview(request))
+				lines.push('最近预览：' + previewSummaryText(lastPreview));
+			lines.push('', '继续后将把系统扫描结果写入数据库。');
+			return window.confirm(lines.join('\n'));
+		}
+
+		function buildInterfaceRequestBody() {
+			return currentSelectionRequest();
+		}
+
+		function loadSubnets(options) {
+			options = options || {};
+			if (options.announce)
+				setPageStatus('notice', '正在刷新页面数据', ['正在回读子网列表与接口候选，请稍候...']);
+			else
+				clearPageStatus();
+			return Promise.all([
+				fetchJson('/subnets?limit=500'),
+				fetchJson('/subnets/candidates').catch(function(err) { return err; }),
+				fetchJson('/subnets/selection').catch(function(err) { return err; })
+			]).then(function(results) {
+				lastRaw = results[0];
+				renderSubnets(results[0]);
+				if (editingSubnetId) {
+					var editingSubnet = findSubnetById(editingSubnetId);
+					if (editingSubnet)
+						startSubnetEdit(editingSubnet);
+					else
+						stopSubnetEdit();
+				}
+				if (results[2] && results[2].ok && Array.isArray(results[2].interfaces)) {
+					selectionStateHydrated = true;
+					selectedCandidateMap = normalizeInterfaces(results[2].interfaces).reduce(function(acc, name) {
+						acc[name] = true;
+						return acc;
+					}, {});
+				} else if (results[2] && (results[2].error || results[2].message || results[2].ok === false)) {
+					selectionStateHydrated = false;
+					setPageStatus('warn', '接口选择读取失败', [
+						'已回退使用候选接口返回状态。',
+						String(results[2].error || results[2].message || 'selection api unavailable')
+					], results[2]);
+				}
+				if (results[1] && !(results[1].error || results[1].message && results[1].ok === false))
+					renderCandidates(results[1]);
+				if (!ui.normalizeRows(results[0]).length && results[0] && results[0].message)
+					setPageStatus('bad', '子网数据格式异常', ['当前返回的不是子网数组：' + results[0].message], results[0]);
+			});
+		}
+
+		document.getElementById('subnet-sync').addEventListener('click', function() {
+			var request = buildInterfaceRequestBody();
+			var interfaces = request.interfaces;
+			var body = request.body;
+			if (!interfaces.length) {
+				setPageStatus('warn', '请先勾选接口', ['至少勾选一个接口后，才可以同步。']);
+				return;
+			}
+			if (!confirmSyncRequest(request)) {
+				setPageStatus('warn', '已取消同步', [
+					'同步动作已取消。',
+					hasFreshPreview(request) ? ('最近预览：' + previewSummaryText(lastPreview)) : '如需更稳妥，请先执行一次预览再同步。'
+				]);
+				return;
+			}
+			setPageStatus('notice', '正在写入同步结果', ['正在从 OpenWrt 网络与 DHCP 配置读取子网，并写入数据库，请稍候...']);
+			postForm('/subnets/sync', body).then(function(result) {
+				var lines = [
+					result.message || (result.ok ? '子网写入同步已完成。' : '子网写入同步未成功。'),
+					'目标接口：' + interfaces.join(', ')
+				].concat(!result.ok ? commonGuidanceLines(result.message || result.error) : []);
+				setPageStatus(result.ok ? 'ok' : 'bad', result.ok ? '同步写入已完成' : '同步写入失败', lines, result);
+				if (result.ok) {
+					setDescrText('同步写入完成，正在回读子网列表。');
+					loadSubnets();
+				}
+			}).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				setPageStatus('bad', '同步写入失败', [message].concat(commonGuidanceLines(message)), err);
+			});
+		});
+
+		document.getElementById('subnet-preview').addEventListener('click', function() {
+			var request = buildInterfaceRequestBody();
+			if (!request.interfaces.length) {
+				setPageStatus('warn', '请先勾选接口', ['至少勾选一个接口后，才可以预览。']);
+				renderPreviewResult('warn', '等待选择接口', ['请在候选列表中先勾选接口。']);
+				return;
+			}
+			setPageStatus('notice', '正在预览纳管结果', ['正在读取所选接口的子网候选并与当前数据库结果比对，请稍候...']);
+			renderPreviewResult('notice', '正在预览', ['正在读取所选接口的子网候选并与当前数据库结果比对，请稍候...']);
+			fetchJson('/subnets/preview?' + new URLSearchParams(request.body).toString()).then(function(result) {
+				lastPreview = result;
+				lastPreviewContext = {
+					interfaces: request.interfaces.slice(),
+					fingerprint: interfacesFingerprint(request.interfaces)
+				};
+				renderPreviewResult(result.ok === false ? 'bad' : 'ok', result.ok === false ? '预览失败' : '预览已完成', [
+					'目标接口：' + request.interfaces.join(', '),
+						'候选子网数量：' + (result.preview_count || (result.rows && result.rows.length) || 0),
+						result.summary ? ('将新增 ' + (result.summary.added || 0) + '，将更新 ' + (result.summary.updated || 0) + '，无变化 ' + (result.summary.unchanged || 0)) : ''
+				], result);
+				setPageStatus(result.ok === false ? 'bad' : 'ok', result.ok === false ? '预览失败' : '已预览', [
+					describeInterfaces(request.interfaces),
+					'候选子网数量：' + (result.preview_count || (result.rows && result.rows.length) || 0),
+					result.summary ? ('预览摘要：' + previewSummaryText(result)) : ''
+				].concat(result.ok === false ? commonGuidanceLines(result.message || result.error) : []), result.ok === false ? result : null);
+				if (result.rows && result.rows.length)
+					setDescrText('预览已完成。确认候选子网无误后，再点击“写入同步结果”把系统结果写入数据库。');
+			}).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				renderPreviewResult('bad', '预览失败', [message].concat(commonGuidanceLines(message)), err);
+				setPageStatus('bad', '预览失败', [message].concat(commonGuidanceLines(message)), err);
+			});
+		});
+
+		document.getElementById('subnet-refresh').addEventListener('click', function() {
+			setDescrText('正在刷新页面数据...');
+			loadSubnets({ announce: true }).catch(function(err) {
+				setPageStatus('bad', '页面刷新失败', [err && (err.message || err.error) || String(err)], err);
+			});
+		});
+
+		document.getElementById('subnet-editor-save').addEventListener('click', function() {
+			saveInlineSubnetMeta(editingSubnetId);
+		});
+
+		document.getElementById('subnet-editor-cancel').addEventListener('click', function() {
+			stopSubnetEdit();
+			setPageStatus('notice', '已取消编辑', ['子网元数据编辑已取消。']);
+		});
+
+		document.getElementById('subnet-select-all').addEventListener('click', function() {
+			var interfaces = subnetCandidates.map(function(candidate) {
+				return candidate.interface_name;
+			}).filter(function(name) { return !!name; });
+			queueSelectionSave(interfaces, '已全选接口', selectionStatusLines(interfaces)).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				setPageStatus('bad', '接口选择保存失败', [message], err);
+			});
+		});
+
+		document.getElementById('subnet-clear-all').addEventListener('click', function() {
+			queueSelectionSave([], '已清空接口选择', selectionStatusLines([])).catch(function(err) {
+				var message = err && (err.message || err.error) || String(err);
+				setPageStatus('bad', '接口选择保存失败', [message], err);
+			});
+		});
+
+		loadSubnets({ announce: false }).catch(function(err) {
+			setPageStatus('bad', '子网页初始化失败', ['暂时无法载入子网列表。'], err);
+			setDescrText('子网页加载失败，请检查接口返回或认证配置。');
+		});
+	})();
+</script>
+
+<%+footer%>

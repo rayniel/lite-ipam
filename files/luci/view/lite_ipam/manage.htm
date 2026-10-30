@@ -1,0 +1,842 @@
+<%+header%>
+<%+lite_ipam/style%>
+<%+lite_ipam/ui%>
+<style type="text/css">
+	.lite-ipam-tab-meta { margin-left: 6px; font-size: 11px; font-weight: 400; }
+	.lite-ipam-tab-panel[hidden] { display: none; }
+	.lite-ipam-list-summary { font-size: 12px; }
+	.lite-ipam-list { overflow: auto; }
+	.lite-ipam-host-table { min-width: 980px; }
+	.lite-ipam-host-name { font-weight: 700; }
+	.lite-ipam-host-meta { color: #666; margin-top: 2px; font-size: 12px; }
+	.lite-ipam-selected-summary { margin-bottom: 8px; }
+	.lite-ipam-inline-actions { justify-content: flex-end; }
+	.lite-ipam-pagination { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: 12px; }
+	.lite-ipam-pagination-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+	.lite-ipam-pagination-actions select { min-height: 32px; padding: 4px 8px; }
+	.lite-ipam-detail-meta { margin: 8px 0; }
+</style>
+
+<div class="cbi-map">
+	<h2 name="content">Lite IPAM 主机管理</h2>
+	<div class="cbi-map-descr" id="host-descr-text">管理已纳管主机、固定地址和 dnsmasq 下发记录。页面中的“租约最近确认”来自 dnsmasq hook 与租约同步，不等同于真实链路活跃时间；“活动状态”用于说明当前是否已经接入更真实的活动探测来源。</div>
+	<div class="lite-ipam-shell">
+		<div class="lite-ipam-page-actions">
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'overview')%>">概览</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'subnets')%>">子网</a>
+			<button class="cbi-button" id="host-refresh-leases-top" type="button">同步租约</button>
+			<button class="cbi-button" id="host-refresh-top" type="button">刷新页面数据</button>
+		</div>
+
+		<div class="lite-ipam-page-message" id="host-message"></div>
+
+		<div class="cbi-section">
+			<h3>概览</h3>
+			<div id="host-stats"></div>
+		</div>
+
+		<ul class="cbi-tabmenu lite-ipam-tabs" id="host-tabs">
+			<li class="cbi-tab" data-tab="list"><a href="#">主机列表 <span class="lite-ipam-tab-meta" id="host-tab-list-meta">载入中</span></a></li>
+			<li class="cbi-tab-disabled" data-tab="create"><a href="#">新建主机 <span class="lite-ipam-tab-meta" id="host-tab-create-meta">等待子网</span></a></li>
+		</ul>
+
+		<div id="host-layout">
+			<div class="cbi-section lite-ipam-panel lite-ipam-tab-panel" id="host-list-card" data-panel="list">
+				<h3>主机列表</h3>
+				<div class="cbi-section-descr">使用模糊搜索、快速视图和排序缩小范围；编辑按钮会把当前主机载入下方表单。</div>
+				<div>
+					<div class="cbi-value"><label class="cbi-value-title" for="host-search">模糊搜索</label><div class="cbi-value-field"><input id="host-search" type="text" placeholder="主机名、归属、MAC、IP、设备类型或备注" /></div></div>
+					<div class="cbi-value"><label class="cbi-value-title" for="host-filter-subnet">子网</label><div class="cbi-value-field"><select id="host-filter-subnet"><option value="">全部子网</option></select></div></div>
+					<div class="cbi-value"><label class="cbi-value-title" for="host-filter-enabled">状态</label><div class="cbi-value-field"><select id="host-filter-enabled"><option value="">全部状态</option><option value="1">仅启用</option><option value="0">仅禁用</option></select></div></div>
+					<div class="cbi-value"><label class="cbi-value-title" for="host-sort">排序</label><div class="cbi-value-field"><select id="host-sort"><option value="updated_desc">最近更新优先</option><option value="hostname_asc">主机名 A-Z</option><option value="ip_asc">IP 升序</option><option value="subnet_asc">子网/VLAN 升序</option></select></div></div>
+				</div>
+				<div>
+					<div class="cbi-value"><label class="cbi-value-title">快速视图</label><div class="cbi-value-field"><div class="lite-ipam-actions" id="host-view-switch">
+						<button class="cbi-button cbi-button-apply" data-view="all" type="button">全部</button>
+						<button class="cbi-button" data-view="reserved" type="button">保留地址</button>
+						<button class="cbi-button" data-view="disabled" type="button">已禁用</button>
+						<button class="cbi-button" data-view="unowned" type="button">未填归属</button>
+					</div></div></div>
+					<div class="cbi-value"><label class="cbi-value-title">列表操作</label><div class="cbi-value-field">
+						<div class="lite-ipam-list-summary" id="host-list-summary">正在载入...</div>
+						<div class="lite-ipam-actions">
+							<button class="cbi-button cbi-button-apply" id="host-apply-filter" type="button">应用筛选</button>
+							<button class="cbi-button" id="host-clear-filter" type="button">清除筛选</button>
+							<button class="cbi-button" id="host-refresh" type="button">刷新页面数据</button>
+						</div>
+					</div></div>
+					</div>
+				<div class="lite-ipam-list" id="hosts-list"></div>
+				<div class="lite-ipam-pagination" id="host-pagination"></div>
+			</div>
+
+			<div class="cbi-section lite-ipam-panel lite-ipam-tab-panel" id="host-detail-card" data-panel="create" hidden>
+				<h3 id="host-editor-title">新建主机</h3>
+				<div class="cbi-section-descr" id="host-selected-summary">新建主机：先选择子网，再填写主机名、MAC 与 IP。归属可填写使用人、房间、部门或用途。</div>
+				<div>
+					<div>
+						<div class="cbi-section-descr">身份信息</div>
+						<div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-id">主机 ID</label>
+								<div class="cbi-value-field"><input id="host-id" type="text" readonly /></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-hostname">主机名</label>
+								<div class="cbi-value-field"><input id="host-hostname" type="text" /></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-owner">归属</label>
+								<div class="cbi-value-field"><input id="host-owner" type="text" /></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-type">设备类型</label>
+								<div class="cbi-value-field"><input id="host-type" type="text" /></div>
+							</div>
+						</div>
+					</div>
+					<div>
+						<div class="cbi-section-descr">网络信息</div>
+						<div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-subnet">子网</label>
+								<div class="cbi-value-field"><select id="host-subnet"></select>
+									<div class="lite-ipam-help">选择子网后，新建主机会自动带出对应 VLAN。</div></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-mac">MAC</label>
+								<div class="cbi-value-field"><input id="host-mac" type="text" placeholder="aa:bb:cc:dd:ee:ff" /></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-ip">IP</label>
+								<div class="cbi-value-field"><input id="host-ip" type="text" placeholder="192.168.1.10" /></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-vlan">VLAN ID</label>
+								<div class="cbi-value-field"><input id="host-vlan" type="number" min="0" /></div>
+							</div>
+						</div>
+					</div>
+					<div>
+						<div class="cbi-section-descr">管理属性</div>
+						<div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-reserved">保留地址</label>
+								<div class="cbi-value-field"><select id="host-reserved"><option value="1">是</option><option value="0">否</option></select></div>
+							</div>
+							<div class="cbi-value lite-ipam-field">
+								<label class="cbi-value-title" for="host-enabled">启用</label>
+								<div class="cbi-value-field"><select id="host-enabled"><option value="1">是</option><option value="0">否</option></select></div>
+							</div>
+						</div>
+						<div class="lite-ipam-detail-meta" id="host-detail-meta"></div>
+					</div>
+					<div>
+						<div class="cbi-section-descr">备注</div>
+						<div class="cbi-value lite-ipam-field">
+							<label class="cbi-value-title" for="host-comment">备注</label>
+							<div class="cbi-value-field"><textarea id="host-comment" rows="4"></textarea></div>
+						</div>
+					</div>
+				</div>
+				<div class="lite-ipam-actions">
+					<button class="cbi-button cbi-button-apply" id="host-save">保存新主机</button>
+					<button class="cbi-button" id="host-reset">清空表单</button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+	(function() {
+		var apiBase = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "api", "v1")%>';
+		var ui = window.LiteIpamUi.create({ apiBase: apiBase, messageId: 'host-message' });
+		var subnets = [];
+		var hosts = [];
+		var leases = [];
+		var filteredHosts = [];
+		var currentSyncInterfaces = [];
+		var selectedHostId = null;
+		var activeTab = 'list';
+		var currentPage = 1;
+		var pageSize = 50;
+		var currentView = 'all';
+		var lastRaw = { subnets: null, hosts: null };
+		var layout = document.getElementById('host-layout');
+		var form = {
+			id: document.getElementById('host-id'),
+			hostname: document.getElementById('host-hostname'),
+			mac: document.getElementById('host-mac'),
+			ip: document.getElementById('host-ip'),
+			subnet_id: document.getElementById('host-subnet'),
+			vlan_id: document.getElementById('host-vlan'),
+			owner: document.getElementById('host-owner'),
+			type: document.getElementById('host-type'),
+			comment: document.getElementById('host-comment'),
+			reserved: document.getElementById('host-reserved'),
+			enabled: document.getElementById('host-enabled')
+		};
+		var filters = {
+			search: document.getElementById('host-search'),
+			subnet: document.getElementById('host-filter-subnet'),
+			enabled: document.getElementById('host-filter-enabled'),
+			sort: document.getElementById('host-sort')
+		};
+
+		function fetchJson(path) {
+			return ui.fetchJson(path);
+		}
+
+		function postForm(path, body) {
+			return ui.postForm(path, body);
+		}
+
+		function escapeHtml(value) {
+			return ui.escapeHtml(value);
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			return ui.previewCell(label, valueHtml, accentColor);
+		}
+
+		function previewTable(rows) {
+			return ui.previewTable(rows);
+		}
+
+		function findSubnetById(subnetId) {
+			for (var index = 0; index < subnets.length; index++) {
+				if (String(subnets[index].id) === String(subnetId))
+					return subnets[index];
+			}
+			return null;
+		}
+
+		function setDescrText(text) {
+			document.getElementById('host-descr-text').textContent = text;
+		}
+
+		function setActiveTab(tab) {
+			activeTab = tab === 'create' ? 'create' : 'list';
+			Array.prototype.forEach.call(document.querySelectorAll('#host-tabs [data-tab]'), function(button) {
+				button.className = button.getAttribute('data-tab') === activeTab ? 'cbi-tab' : 'cbi-tab-disabled';
+			});
+			Array.prototype.forEach.call(document.querySelectorAll('[data-panel]'), function(panel) {
+				panel.hidden = panel.getAttribute('data-panel') !== activeTab;
+			});
+			if (activeTab === 'list')
+				layout.classList.remove('create-mode');
+			else
+				layout.classList.add('create-mode');
+		}
+
+		function setAlert(message, tone) {
+			if (message)
+				setPageMessage(tone === 'bad' ? 'bad' : 'warning', tone === 'bad' ? '需要处理' : '提示', [message]);
+		}
+
+		function setPageMessage(type, title, lines, rawData) {
+			ui.showMessage(type, title, lines, rawData);
+		}
+
+		function clearPageMessage() {
+			ui.clearMessage();
+		}
+
+		function updateTabLabels() {
+			var listMeta = document.getElementById('host-tab-list-meta');
+			var createMeta = document.getElementById('host-tab-create-meta');
+			if (listMeta)
+				listMeta.textContent = hosts.length ? ('(' + hosts.length + ')') : '(0)';
+			if (createMeta)
+				createMeta.textContent = subnets.length ? ('(' + subnets.length + ' 个子网)') : '(无子网)';
+		}
+
+		function normalizeInterfaces(input) {
+			var normalized = [];
+			var seen = {};
+			function append(name) {
+				name = String(name == null ? '' : name).trim();
+				if (!name || seen[name])
+					return;
+				seen[name] = true;
+				normalized.push(name);
+			}
+			if (Array.isArray(input)) {
+				input.forEach(append);
+				return normalized;
+			}
+			if (input && typeof input === 'object') {
+				Object.keys(input)
+					.sort(function(a, b) { return Number(a) - Number(b); })
+					.map(function(key) { return input[key]; })
+					.forEach(append);
+			}
+			return normalized;
+		}
+
+		function syncScopeText() {
+			return currentSyncInterfaces.length ? currentSyncInterfaces.join(', ') : '未选择接口';
+		}
+
+		function keyForHost(host) {
+			return 'host-' + String(host.id || '');
+		}
+
+		function activityStateMeta(host) {
+			var state = String(host && host.last_activity_state || 'unavailable');
+			if (state === 'available')
+				return { label: '最近活动', detail: host.last_activity || '-', tone: 'soft' };
+			if (state === 'pending_probe')
+				return { label: '活动状态', detail: '仅有租约确认，尚未接入独立活动探测', tone: 'soft' };
+			return { label: '活动状态', detail: '暂无活动数据', tone: 'soft' };
+		}
+
+		function buildManageRows() {
+			return hosts.map(function(host) {
+				host.row_kind = 'host';
+				host.row_key = keyForHost(host);
+				return host;
+			});
+		}
+
+		function updateSelectedSummary(host) {
+			var el = document.getElementById('host-selected-summary');
+			var meta = document.getElementById('host-detail-meta');
+			var title = document.getElementById('host-editor-title');
+			var activityMeta;
+			if (!host) {
+				title.textContent = '新建主机';
+				el.textContent = '新建主机：先选择子网，再填写主机名、MAC 与 IP。';
+				meta.innerHTML = '';
+				return;
+			}
+			activityMeta = activityStateMeta(host);
+			title.textContent = '编辑主机 #' + escapeHtml(host.id || '-');
+			el.innerHTML = '当前主机：<strong>' + escapeHtml(host.hostname || '(未命名主机)') + '</strong>，IP ' + escapeHtml(host.ip || '-') + '，MAC ' + escapeHtml(host.mac || '-') + '，子网 #' + escapeHtml(host.subnet_id || '-');
+			meta.innerHTML = [
+				host.source ? '<span class="lite-ipam-pill soft">来源 ' + escapeHtml(host.source) + '</span>' : '',
+				host.sync_status ? '<span class="lite-ipam-pill soft">同步 ' + escapeHtml(host.sync_status) + '</span>' : '',
+				host.lease_seen_at ? '<span class="lite-ipam-pill soft">租约最近确认 ' + escapeHtml(host.lease_seen_at) + '</span>' : '',
+				activityMeta ? '<span class="lite-ipam-pill ' + escapeHtml(activityMeta.tone || 'soft') + '">' + escapeHtml(activityMeta.label) + ' ' + escapeHtml(activityMeta.detail) + '</span>' : '',
+				host.updated_at ? '<span class="lite-ipam-pill soft">更新 ' + escapeHtml(host.updated_at) + '</span>' : ''
+			].join('');
+		}
+
+		function selectedSubnet() {
+			return findSubnetById(form.subnet_id.value);
+		}
+
+		function renderStats() {
+			var enabledCount = 0;
+			var reservedCount = 0;
+			var withOwnerCount = 0;
+			hosts.forEach(function(host) {
+				if (String(host.enabled) === '1')
+					enabledCount += 1;
+				if (String(host.reserved) === '1')
+					reservedCount += 1;
+				if (host.owner)
+					withOwnerCount += 1;
+			});
+			var cards = [
+				{ label: '主机总数', value: hosts.length, meta: '数据库中的主机记录' },
+				{ label: '已启用', value: enabledCount, meta: '会参与固定地址和管理视图' },
+				{ label: '保留地址', value: reservedCount, meta: '已标记为保留地址的主机' },
+				{ label: '已填归属', value: withOwnerCount, meta: '已记录使用人、房间、部门或用途' },
+				{ label: '筛选结果', value: filteredHosts.length, meta: '当前列表条件匹配的条目' }
+			];
+			document.getElementById('host-stats').innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell(cards[0].label, escapeHtml(cards[0].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[0].meta) + '</div>', '#1d4ed8') +
+					previewCell(cards[1].label, escapeHtml(cards[1].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[1].meta) + '</div>', '#15803d') +
+					previewCell(cards[2].label, escapeHtml(cards[2].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[2].meta) + '</div>', '#b45309') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell(cards[3].label, escapeHtml(cards[3].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[3].meta) + '</div>') +
+					previewCell(cards[4].label, escapeHtml(cards[4].value) + '<div class="lite-ipam-help">' + escapeHtml(cards[4].meta) + '</div>') +
+					'<td class="td"></td><td class="td"></td>' +
+				'</tr>'
+			]);
+		}
+
+		function currentViewLabel() {
+			if (currentView === 'reserved')
+				return '保留地址';
+			if (currentView === 'disabled')
+				return '已禁用';
+			if (currentView === 'unowned')
+				return '未填归属';
+			return '全部';
+		}
+
+		function selectedOptionText(selectEl, fallback) {
+			var option = selectEl && selectEl.options ? selectEl.options[selectEl.selectedIndex] : null;
+			return option ? option.text : fallback;
+		}
+
+		function renderListSummary() {
+			var keyword = filters.search.value || '未设置';
+			var summaryRows = [
+				['匹配结果', filteredHosts.length + ' / ' + hosts.length, '当前条件匹配 / 数据库总量'],
+				['快速视图', currentViewLabel(), '由快速视图按钮控制'],
+				['模糊搜索', keyword, '主机名、归属、MAC、IP、设备类型、备注'],
+				['子网范围', selectedOptionText(filters.subnet, '全部子网'), '按子网进一步收敛'],
+				['状态', selectedOptionText(filters.enabled, '全部状态'), '启用或禁用状态'],
+				['排序', selectedOptionText(filters.sort, '最近更新优先'), '当前结果排序方式'],
+				['同步接口范围', syncScopeText(), 'Manage 页面只显示这些已选接口范围下的子网和主机'],
+				['当前可见子网', subnets.length ? String(subnets.length) : '0', subnets.length ? '当前范围下已有同步子网' : '当前范围下还没有同步出任何子网']
+			];
+			document.getElementById('host-list-summary').innerHTML = previewTable([
+				'<tr class="tr">' +
+					previewCell(summaryRows[0][0], escapeHtml(summaryRows[0][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[0][2]) + '</div>', '#1d4ed8') +
+					previewCell(summaryRows[1][0], escapeHtml(summaryRows[1][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[1][2]) + '</div>', '#15803d') +
+					previewCell(summaryRows[2][0], escapeHtml(summaryRows[2][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[2][2]) + '</div>', '#b45309') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell(summaryRows[3][0], escapeHtml(summaryRows[3][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[3][2]) + '</div>') +
+					previewCell(summaryRows[4][0], escapeHtml(summaryRows[4][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[4][2]) + '</div>') +
+					previewCell(summaryRows[5][0], escapeHtml(summaryRows[5][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[5][2]) + '</div>') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell(summaryRows[6][0], escapeHtml(summaryRows[6][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[6][2]) + '</div>') +
+					previewCell(summaryRows[7][0], escapeHtml(summaryRows[7][1]) + '<div class="lite-ipam-help">' + escapeHtml(summaryRows[7][2]) + '</div>') +
+					'<td class="td"></td><td class="td"></td>' +
+				'</tr>'
+			]);
+		}
+
+		function setView(view) {
+			currentView = view;
+			Array.prototype.forEach.call(document.querySelectorAll('#host-view-switch button'), function(button) {
+				button.className = button.getAttribute('data-view') === view ? 'cbi-button cbi-button-apply' : 'cbi-button';
+			});
+		}
+
+		function resetForm() {
+			selectedHostId = null;
+			form.id.value = '';
+			form.hostname.value = '';
+			form.mac.value = '';
+			form.ip.value = '';
+			form.owner.value = '';
+			form.type.value = '';
+			form.comment.value = '';
+			form.reserved.value = '1';
+			form.enabled.value = '1';
+			if (subnets.length) {
+				form.subnet_id.value = String(subnets[0].id);
+				form.vlan_id.value = String(subnets[0].vlan_id || 0);
+			} else {
+				form.subnet_id.value = '';
+				form.vlan_id.value = '';
+			}
+			document.getElementById('host-save').textContent = '保存新主机';
+			updateSelectedSummary(null);
+		}
+
+		function fillForm(host) {
+			var subnet = findSubnetById(host.subnet_id);
+			selectedHostId = host.id || null;
+			form.id.value = host.id || '';
+			form.hostname.value = host.hostname || '';
+			form.mac.value = host.mac || '';
+			form.ip.value = host.ip || '';
+			form.subnet_id.value = host.subnet_id || '';
+			form.vlan_id.value = host.vlan_id || (subnet && subnet.vlan_id) || '';
+			form.owner.value = host.owner || '';
+			form.type.value = host.type || '';
+			form.comment.value = host.comment || '';
+			form.reserved.value = String(host.reserved) === '1' ? '1' : '0';
+			form.enabled.value = String(host.enabled) === '1' ? '1' : '0';
+			document.getElementById('host-save').textContent = '保存主机修改';
+			updateSelectedSummary(host);
+		}
+
+		function renderSubnets(rows) {
+			subnets = ui.normalizeRows(rows);
+			form.subnet_id.innerHTML = subnets.map(function(subnet) {
+				return '<option value="' + subnet.id + '">#' + subnet.id + ' VLAN ' + subnet.vlan_id + ' ' + escapeHtml(subnet.display_name || subnet.name || subnet.cidr || '') + '</option>';
+			}).join('');
+			filters.subnet.innerHTML = '<option value="">全部子网</option>' + subnets.map(function(subnet) {
+				return '<option value="' + subnet.id + '">#' + subnet.id + ' ' + escapeHtml(subnet.display_name || subnet.name || subnet.cidr || '') + '</option>';
+			}).join('');
+			if (!subnets.length) {
+				setAlert('当前没有可用子网，新建主机前需要先同步子网。', 'bad');
+				setPageMessage('warn', '缺少子网', ['当前没有任何子网记录。', '请先进入子网页完成系统同步。'], rows);
+				clearPageMessage();
+			} else {
+				setAlert('');
+			}
+			updateTabLabels();
+		}
+
+		function hostStatusPill(host) {
+			if (String(host.enabled) !== '1')
+				return '<span class="lite-ipam-pill bad">禁用</span>';
+			if (String(host.reserved) === '1')
+				return '<span class="lite-ipam-pill warn">保留</span>';
+			return '<span class="lite-ipam-pill ok">启用</span>';
+		}
+
+		function applyFilters() {
+			var keyword = (filters.search.value || '').toLowerCase();
+			var subnetId = filters.subnet.value;
+			var enabled = filters.enabled.value;
+			var sort = filters.sort.value;
+			filteredHosts = buildManageRows().filter(function(host) {
+				var matchedKeyword = !keyword || [host.hostname, host.owner, host.mac, host.ip, host.type, host.comment]
+					.join(' ')
+					.toLowerCase()
+					.indexOf(keyword) >= 0;
+				var matchedSubnet = !subnetId || String(host.subnet_id) === String(subnetId);
+				var matchedEnabled = enabled === '' || String(host.enabled) === String(enabled);
+				var matchedView = true;
+				if (currentView === 'reserved')
+					matchedView = String(host.reserved) === '1';
+				else if (currentView === 'disabled')
+					matchedView = String(host.enabled) !== '1';
+				else if (currentView === 'unowned')
+					matchedView = !host.owner && host.row_kind === 'host';
+				return matchedKeyword && matchedSubnet && matchedEnabled && matchedView;
+			});
+			filteredHosts.sort(function(left, right) {
+				if (sort === 'hostname_asc')
+					return String(left.hostname || '').localeCompare(String(right.hostname || ''));
+				if (sort === 'ip_asc')
+					return String(left.ip || '').localeCompare(String(right.ip || ''), undefined, { numeric: true });
+				if (sort === 'subnet_asc') {
+					var subnetCompare = (Number(left.subnet_id) || 0) - (Number(right.subnet_id) || 0);
+					if (subnetCompare !== 0)
+						return subnetCompare;
+					return (Number(left.vlan_id) || 0) - (Number(right.vlan_id) || 0);
+				}
+				return String(right.updated_at || '').localeCompare(String(left.updated_at || ''));
+			});
+			var totalPages = Math.max(1, Math.ceil(filteredHosts.length / pageSize));
+			if (currentPage > totalPages)
+				currentPage = totalPages;
+			if (currentPage < 1)
+				currentPage = 1;
+			renderHostList();
+			renderPagination();
+			renderStats();
+			renderListSummary();
+		}
+
+		function pagedHosts() {
+			var start = (currentPage - 1) * pageSize;
+			return filteredHosts.slice(start, start + pageSize);
+		}
+
+		function renderPagination() {
+			var el = document.getElementById('host-pagination');
+			var totalPages = Math.max(1, Math.ceil(filteredHosts.length / pageSize));
+			var start = filteredHosts.length ? ((currentPage - 1) * pageSize + 1) : 0;
+			var end = Math.min(filteredHosts.length, currentPage * pageSize);
+			el.innerHTML = '<div>第 ' + escapeHtml(currentPage) + ' / ' + escapeHtml(totalPages) + ' 页，显示 ' + escapeHtml(start) + '-' + escapeHtml(end) + ' 条</div>' +
+				'<div class="lite-ipam-pagination-actions">' +
+				'<button class="cbi-button" id="host-page-prev"' + (currentPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+				'<button class="cbi-button" id="host-page-next"' + (currentPage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+				'<label>每页 <select id="host-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></label>' +
+				'</div>';
+			document.getElementById('host-page-size').value = String(pageSize);
+			document.getElementById('host-page-prev').addEventListener('click', function() {
+				if (currentPage > 1) {
+					currentPage -= 1;
+					selectedHostId = null;
+					renderHostList();
+					renderPagination();
+				}
+			});
+			document.getElementById('host-page-next').addEventListener('click', function() {
+				if (currentPage < totalPages) {
+					currentPage += 1;
+					selectedHostId = null;
+					renderHostList();
+					renderPagination();
+				}
+			});
+			document.getElementById('host-page-size').addEventListener('change', function() {
+				pageSize = Number(this.value) || 50;
+				currentPage = 1;
+				selectedHostId = null;
+				renderHostList();
+				renderPagination();
+			});
+		}
+
+		function renderHostList() {
+			var el = document.getElementById('hosts-list');
+			var rows = pagedHosts();
+			if (!filteredHosts.length) {
+				el.innerHTML = '<table id="status_hosts" class="table cbi-section-table lite-ipam-host-table"><tbody>' +
+					'<tr class="tr table-titles"><th class="th">主机名</th><th class="th">IPv4 地址</th><th class="th">MAC 地址</th><th class="th">归属</th><th class="th">子网 / VLAN</th><th class="th">状态</th><th class="th cbi-section-actions">操作</th></tr>' +
+					'<tr class="tr placeholder"><td class="td" colspan="7"><em>无记录</em></td></tr>' +
+				'</tbody></table>';
+				return;
+			}
+			el.innerHTML = '<table id="status_hosts" class="table cbi-section-table lite-ipam-host-table"><tbody><tr class="tr table-titles">' +
+				'<th class="th">主机名</th>' +
+				'<th class="th">IPv4 地址</th>' +
+				'<th class="th">MAC 地址</th>' +
+				'<th class="th">归属</th>' +
+				'<th class="th">子网 / VLAN</th>' +
+				'<th class="th">状态</th>' +
+				'<th class="th cbi-section-actions">操作</th>' +
+				'</tr>' + rows.map(function(host) {
+				var hostname = host.hostname || '(未命名主机)';
+				var owner = host.owner || '-';
+				var subnetLabel = '#' + (host.subnet_id || '-') + ' / VLAN ' + (host.vlan_id || '-');
+				var meta = [];
+				if (host.type)
+					meta.push(host.type);
+				if (host.comment)
+					meta.push(host.comment);
+				return '<tr class="tr">' +
+					'<td class="td"><div class="lite-ipam-host-name">' + escapeHtml(hostname) + '</div><div class="lite-ipam-host-meta">' + escapeHtml(meta.length ? meta.join(' / ') : '-') + '</div></td>' +
+					'<td class="td lite-ipam-mono">' + escapeHtml(host.ip || '-') + '</td>' +
+					'<td class="td lite-ipam-mono">' + escapeHtml(host.mac || '-') + '</td>' +
+					'<td class="td">' + escapeHtml(owner) + '</td>' +
+					'<td class="td">' + escapeHtml(subnetLabel) + '</td>' +
+					'<td class="td">' + hostStatusPill(host) + '</td>' +
+					'<td class="td cbi-section-actions"><button class="cbi-button" data-edit="' + escapeHtml(host.row_key) + '">编辑</button> <button class="cbi-button" data-delete="' + escapeHtml(host.row_key) + '">删除</button></td>' +
+				'</tr>';
+			}).join('') + '</tbody></table>';
+			rows.forEach(function(host) {
+				var editButton = el.querySelector('button[data-edit="' + host.row_key + '"]');
+				var deleteButton = el.querySelector('button[data-delete="' + host.row_key + '"]');
+				if (editButton) {
+					editButton.addEventListener('click', function(e) {
+						e.stopPropagation();
+						fillForm(host);
+						setActiveTab('create');
+						setDescrText('当前为编辑模式。修改表单后保存主机，即可更新这条记录。');
+						setPageMessage('notice', '正在编辑主机', ['主机 #' + host.id + ' 已载入到下方表单。', '主机名：' + (host.hostname || '(未命名主机)')]);
+					});
+				}
+				if (deleteButton) {
+					deleteButton.addEventListener('click', function(e) {
+						e.stopPropagation();
+						deleteHost(host);
+					});
+				}
+			});
+		}
+
+		function validatePayload(payload) {
+			if (!payload.subnet_id)
+				return '请选择子网。';
+			if (!payload.mac)
+				return 'MAC 不能为空。';
+			if (!payload.ip)
+				return 'IP 不能为空。';
+			return null;
+		}
+
+		function deleteHost(host) {
+			if (!host || !host.id) {
+				setPageMessage('warning', '无法删除主机', ['当前没有选中的主机记录。']);
+				return;
+			}
+			if (!window.confirm('确认删除主机 #' + host.id + ' 吗？'))
+				return;
+			setPageMessage('notice', '正在删除主机', ['正在删除主机 #' + host.id + '，请稍候...']);
+			postForm('/hosts/delete', { id: host.id }).then(function(result) {
+				setPageMessage(result.ok ? 'ok' : 'bad', result.ok ? '已删除' : '主机删除失败', [
+					result.message || (result.ok ? '主机记录已删除。' : '主机记录删除失败。')
+				], result.ok ? null : result);
+				if (result.ok) {
+					selectedHostId = null;
+					setDescrText('主机已删除，正在刷新列表。');
+					loadAll();
+				}
+			}).catch(function(err) {
+				setPageMessage('bad', '主机删除失败', [err && (err.message || err.error) || String(err)], err);
+			});
+		}
+
+		function collectPayload() {
+			return {
+				id: form.id.value,
+				hostname: form.hostname.value,
+				mac: form.mac.value,
+				ip: form.ip.value,
+				subnet_id: form.subnet_id.value,
+				owner: form.owner.value,
+				type: form.type.value,
+				comment: form.comment.value,
+				reserved: form.reserved.value,
+				enabled: form.enabled.value
+			};
+		}
+
+		function hasRowKey(rowKey) {
+			var rows = buildManageRows();
+			for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+				if (String(rows[rowIndex].row_key) === String(rowKey))
+					return true;
+			}
+			return false;
+		}
+
+		function loadAll(options) {
+			options = options || {};
+			if (options.announce)
+				setPageMessage('notice', '正在刷新主机列表', ['正在重新读取主机与子网数据，请稍候...']);
+			else
+				clearPageMessage();
+			var subnetsRequest = fetchJson('/subnets?limit=500');
+			var hostsRequest = fetchJson('/hosts?limit=500');
+			var selectionRequest = fetchJson('/subnets/selection').catch(function(err) { return err; });
+			return Promise.all([subnetsRequest, hostsRequest, selectionRequest]).then(function(results) {
+				lastRaw.subnets = results[0];
+				lastRaw.hosts = results[1];
+				lastRaw.leases = null;
+				currentSyncInterfaces = results[2] && results[2].ok ? normalizeInterfaces(results[2].interfaces) : [];
+				renderSubnets(results[0]);
+				hosts = ui.normalizeRows(results[1]);
+				leases = [];
+				if (selectedHostId && !hasRowKey('host-' + selectedHostId)) {
+					selectedHostId = null;
+				}
+				if (activeTab === 'create')
+					resetForm();
+				applyFilters();
+				updateTabLabels();
+				setPageMessage('ok', '主机列表已载入', ['已载入 ' + hosts.length + ' 条主机记录。', '可以在上方筛选定位，再通过编辑按钮把主机载入下方表单。'], { subnets: results[0], hosts: results[1] });
+				if (options.announce)
+					setPageMessage('ok', '已刷新', ['已载入 ' + hosts.length + ' 条主机记录。']);
+				else
+					clearPageMessage();
+				if (!subnets.length && currentSyncInterfaces.length)
+					setDescrText('当前同步接口范围为 ' + syncScopeText() + '，但这个范围下还没有同步出任何子网；如果 DHCP 实际跑在其他 VLAN 接口上，Manage 页面会显示为空。');
+				else
+					setDescrText('主机数据已更新。当前同步接口范围：' + syncScopeText() + '。你现在可以直接用名称、MAC/IP、状态和视图组合来快速定位目标主机。');
+			});
+		}
+
+		form.subnet_id.addEventListener('change', function() {
+			var selected = findSubnetById(form.subnet_id.value);
+			if (selected && !form.id.value)
+				form.vlan_id.value = String(selected.vlan_id || 0);
+		});
+
+		function refilterFromFirstPage() {
+			currentPage = 1;
+			selectedHostId = null;
+			applyFilters();
+		}
+
+		function refreshHosts() {
+			setDescrText('正在刷新主机与子网数据...');
+			return loadAll({ announce: true }).catch(function(err) {
+				setAlert(err && (err.message || err.error || String(err)), 'bad');
+				setPageMessage('bad', '主机页刷新失败', [String(err)], err);
+			});
+		}
+
+		function refreshLeasesAndReload() {
+			setDescrText('正在同步 dnsmasq 租约并回读主机列表...');
+			setPageMessage('notice', '正在同步租约', ['正在从 dnsmasq 读取最新租约，完成后会自动刷新主机列表。']);
+			return postForm('/leases/refresh', {}).then(function(result) {
+				setPageMessage('ok', '租约已同步', [
+					result.message || '租约同步已完成。',
+					result.records != null ? ('处理记录：' + result.records) : '处理记录：未知',
+					result.ignored != null ? ('忽略记录：' + result.ignored) : ''
+				].filter(Boolean));
+				return loadAll({ announce: false });
+			}).catch(function(err) {
+				setAlert(err && (err.message || err.error || String(err)), 'bad');
+				setPageMessage('bad', '租约同步失败', [err && (err.message || err.error) || String(err)], err);
+				setDescrText('租约同步失败，请检查 dnsmasq 租约文件或 sqlite 状态。');
+				throw err;
+			});
+		}
+
+		filters.search.addEventListener('keydown', function(e) {
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				refilterFromFirstPage();
+			}
+		});
+		filters.sort.addEventListener('change', refilterFromFirstPage);
+		Array.prototype.forEach.call(document.querySelectorAll('#host-view-switch button'), function(button) {
+			button.addEventListener('click', function() {
+				setView(button.getAttribute('data-view'));
+				refilterFromFirstPage();
+			});
+		});
+		Array.prototype.forEach.call(document.querySelectorAll('#host-tabs [data-tab]'), function(button) {
+			button.addEventListener('click', function(e) {
+				e.preventDefault();
+				if (button.getAttribute('data-tab') === 'create') {
+					resetForm();
+					updateSelectedSummary(null);
+					setDescrText('当前为新建模式。请先选子网，再填写主机名、MAC 和 IP，最后保存。');
+				} else {
+					setDescrText('主机列表支持筛选、分页，并通过编辑按钮载入下方表单。');
+				}
+				setActiveTab(button.getAttribute('data-tab'));
+			});
+			button.addEventListener('keydown', function(e) {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					button.click();
+				}
+			});
+		});
+
+		document.getElementById('host-save').addEventListener('click', function() {
+			var payload = collectPayload();
+			var error = validatePayload(payload);
+			if (error) {
+				setPageMessage('bad', '主机保存校验失败', [error], payload);
+				return;
+			}
+			setPageMessage('notice', '正在保存主机', ['正在提交主机信息，请稍候...']);
+			postForm('/hosts/save', payload).then(function(result) {
+				setPageMessage(result.ok ? 'ok' : 'bad', result.ok ? '已保存' : '主机保存失败', [
+					result.message || (result.ok ? '主机信息已保存。' : '主机信息保存失败。')
+				], result.ok ? null : result);
+				if (result.ok) {
+					setDescrText('主机信息已保存，列表和详情将同步刷新。');
+					setActiveTab('list');
+					loadAll();
+				}
+			}).catch(function(err) {
+				setPageMessage('bad', '主机保存失败', [err && (err.message || err.error) || String(err)], err);
+			});
+		});
+
+		document.getElementById('host-reset').addEventListener('click', function() {
+			resetForm();
+			setPageMessage('ok', '表单已清空', ['当前仍在新建主机页签，可以重新选择子网并录入主机信息。'], lastRaw);
+			applyFilters();
+		});
+
+		document.getElementById('host-apply-filter').addEventListener('click', refilterFromFirstPage);
+		document.getElementById('host-clear-filter').addEventListener('click', function() {
+			filters.search.value = '';
+			filters.subnet.value = '';
+			filters.enabled.value = '';
+			filters.sort.value = 'updated_desc';
+			setView('all');
+			refilterFromFirstPage();
+		});
+
+		document.getElementById('host-refresh').addEventListener('click', refreshHosts);
+		document.getElementById('host-refresh-top').addEventListener('click', refreshHosts);
+		document.getElementById('host-refresh-leases-top').addEventListener('click', function() {
+			refreshLeasesAndReload().catch(function() {});
+		});
+
+		loadAll({ announce: false }).catch(function(err) {
+			setAlert(err && (err.message || err.error || String(err)), 'bad');
+			setPageMessage('bad', '主机页加载失败', [String(err)], err);
+			setDescrText('主机管理页加载失败，请检查接口返回或认证配置。');
+		});
+	})();
+</script>
+
+<%+footer%>

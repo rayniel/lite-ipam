@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.apk
+*.ipk
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+.health-preview.html

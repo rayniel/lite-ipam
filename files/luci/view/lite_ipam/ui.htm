@@ -1,0 +1,277 @@
+<script type="text/javascript">
+	window.LiteIpamUi = window.LiteIpamUi || (function() {
+		function escapeHtml(value) {
+			return String(value == null ? '' : value)
+				.replace(/&/g, '\x26amp;')
+				.replace(/</g, '\x26lt;')
+				.replace(/>/g, '\x26gt;')
+				.replace(/"/g, '\x26quot;')
+				.replace(/'/g, '\x26#39;');
+		}
+
+		function toneClass(type) {
+			if (type === 'ok')
+				return 'success';
+			if (type === 'bad')
+				return 'danger';
+			if (type === 'notice')
+				return 'notice';
+			return 'warning';
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			var style = accentColor ? ' style="border-bottom:2px solid ' + accentColor + '"' : '';
+			return '<td class="td right top"><strong' + style + '>' + escapeHtml(label) + '：</strong></td><td class="td">' + valueHtml + '</td>';
+		}
+
+		function previewTable(rows) {
+			return '<table class="table lite-ipam-preview-table">' + rows.join('') + '</table>';
+		}
+
+		function rawJsonBlock(data, title, lines) {
+			var noteHtml = '';
+			if (data == null)
+				return '';
+			if (lines && lines.length)
+				noteHtml = '<div class="lite-ipam-diagnostic-note">' + lines.map(escapeHtml).join('<br />') + '</div>';
+			return '<details class="lite-ipam-raw"><summary>' + escapeHtml(title || '诊断视图：原始响应 JSON') + '</summary>' + noteHtml + '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre></details>';
+		}
+
+		function alertHtml(type, title, lines, rawData, rawTitle, rawLines) {
+			var html = '<div class="alert-message ' + toneClass(type) + '"><strong>' + escapeHtml(title || '') + '</strong>';
+			if (lines && lines.length)
+				html += '<br />' + lines.map(escapeHtml).join('<br />');
+			html += '</div>';
+			if (rawData)
+				html += rawJsonBlock(rawData, rawTitle, rawLines);
+			return html;
+		}
+
+		function diagnosticHtml(data, title, lines) {
+			return rawJsonBlock(data, title, lines);
+		}
+
+		function resolveElement(target) {
+			if (!target)
+				return null;
+			if (typeof target === 'string')
+				return document.getElementById(target);
+			return target;
+		}
+
+		function summaryHtml(rows, rawData, options) {
+			var summaryRows = normalizeRows(rows);
+			var settings = options || {};
+			if (!summaryRows.length) {
+				summaryRows = [
+					'<tr class="tr">' +
+						previewCell(settings.emptyLabel || '数据状态', escapeHtml(settings.emptyValue || '暂无数据'), settings.emptyAccentColor || '#b45309') +
+						previewCell(settings.emptyDetailLabel || '说明', escapeHtml(settings.emptyMessage || '当前接口没有返回可展示摘要。')) +
+						'<td class="td"></td><td class="td"></td>' +
+					'</tr>'
+				];
+			}
+			return previewTable(summaryRows) + (rawData ? diagnosticHtml(rawData, settings.rawTitle, settings.rawLines) : '');
+		}
+
+		function renderHtml(target, html) {
+			var el = resolveElement(target);
+			if (el)
+				el.innerHTML = html || '';
+		}
+
+		function renderDiagnostic(target, data, title, lines) {
+			renderHtml(target, diagnosticHtml(data, title, lines));
+		}
+
+		function renderSummary(target, rows, rawData, options) {
+			renderHtml(target, summaryHtml(rows, rawData, options));
+		}
+
+		function renderFallbackSummary(target, options) {
+			var settings = options || {};
+			renderSummary(target, [
+				'<tr class="tr">' +
+					previewCell(settings.label || '摘要状态', escapeHtml(settings.value || '无法生成'), settings.accentColor || '#b91c1c') +
+					previewCell(settings.detailLabel || '说明', escapeHtml(settings.message || '接口返回无法转换为概览摘要，请查看调试信息。')) +
+					'<td class="td"></td><td class="td"></td>' +
+				'</tr>'
+			], settings.rawData, {
+				rawTitle: settings.rawTitle,
+				rawLines: settings.rawLines
+			});
+		}
+
+		function normalizeRows(rows) {
+			if (Array.isArray(rows))
+				return rows;
+			if (rows && Array.isArray(rows.rows))
+				return rows.rows;
+			if (rows && Array.isArray(rows.items))
+				return rows.items;
+			if (rows && Array.isArray(rows.list))
+				return rows.list;
+			return [];
+		}
+
+		function guidanceLines(message, options) {
+			var text = String(message || '');
+			var scope = options && options.scope || '当前页面';
+			if (text.indexOf('data_root is not configured') >= 0) {
+				return [
+					'当前还没有配置数据目录 data_root。',
+					'请先进入 Lite IPAM 的“设置”页面填写数据目录，例如 /mnt/sata/lite-ipam。',
+					'设置保存并确认目录可写后，再回来继续' + scope + '操作。'
+				];
+			}
+			if (text.indexOf('data_root does not exist') >= 0) {
+				return [
+					'当前配置的数据目录不存在。',
+					'请先到“设置”页面修正 data_root，或确认目录已经创建。'
+				];
+			}
+			return [];
+		}
+
+		function mergeHeaders(baseHeaders, extraHeaders) {
+			var headers = {};
+			var key;
+			for (key in baseHeaders || {})
+				headers[key] = baseHeaders[key];
+			for (key in extraHeaders || {})
+				headers[key] = extraHeaders[key];
+			return headers;
+		}
+
+		function copyFetchOptions(base, extra) {
+			var result = {};
+			var key;
+			for (key in base || {})
+				result[key] = base[key];
+			for (key in extra || {}) {
+				if (key !== 'headers')
+					result[key] = extra[key];
+			}
+			result.headers = mergeHeaders(base && base.headers, extra && extra.headers);
+			return result;
+		}
+
+		function create(options) {
+			var apiBase = options.apiBase || '';
+			var messageId = options.messageId || '';
+			var messageState = {};
+
+			function fetchJson(path, fetchOptions) {
+				var requestOptions = copyFetchOptions({ credentials: 'same-origin' }, fetchOptions);
+				return fetch(apiBase + path, requestOptions).then(function(r) {
+					return r.json().catch(function() {
+						return { ok: false, message: 'invalid json response', status: r.status };
+					}).then(function(data) {
+						if (!r.ok)
+							throw data;
+						return data;
+					});
+				});
+			}
+
+			function postForm(path, body, fetchOptions) {
+				var payload = body || {};
+				var requestOptions;
+				payload._lite_ipam_request = '1';
+				requestOptions = copyFetchOptions({
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: {
+						'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+						'X-Requested-With': 'XMLHttpRequest'
+					},
+					body: new URLSearchParams(payload).toString()
+				}, fetchOptions);
+				return fetch(apiBase + path, requestOptions).then(function(r) {
+					return r.json().catch(function() {
+						return { ok: false, message: 'invalid json response', status: r.status };
+					}).then(function(data) {
+						if (!r.ok)
+							throw data;
+						return data;
+					});
+				});
+			}
+
+			function setPageMessage(state, type, title, lines, rawData, rawTitle, rawLines) {
+				var el = messageId ? document.getElementById(messageId) : null;
+				if (!el)
+					return;
+				if (state.messageTimer) {
+					window.clearTimeout(state.messageTimer);
+					state.messageTimer = null;
+				}
+				el.innerHTML = alertHtml(type, title, lines, rawData, rawTitle, rawLines);
+				if (type === 'ok' && !rawData) {
+					state.messageTimer = window.setTimeout(function() {
+						clearPageMessage(state);
+					}, 3200);
+				}
+			}
+
+			function clearPageMessage(state) {
+				var el = messageId ? document.getElementById(messageId) : null;
+				if (state.messageTimer) {
+					window.clearTimeout(state.messageTimer);
+					state.messageTimer = null;
+				}
+				if (el)
+					el.innerHTML = '';
+			}
+
+			function showMessage(type, title, lines, rawData, rawTitle, rawLines) {
+				setPageMessage(messageState, type, title, lines, rawData, rawTitle, rawLines);
+			}
+
+			function clearMessage() {
+				clearPageMessage(messageState);
+			}
+
+			return {
+				escapeHtml: escapeHtml,
+				toneClass: toneClass,
+				previewCell: previewCell,
+				previewTable: previewTable,
+				rawJsonBlock: rawJsonBlock,
+				alertHtml: alertHtml,
+				diagnosticHtml: diagnosticHtml,
+				summaryHtml: summaryHtml,
+				renderHtml: renderHtml,
+				renderDiagnostic: renderDiagnostic,
+				renderSummary: renderSummary,
+				renderFallbackSummary: renderFallbackSummary,
+				normalizeRows: normalizeRows,
+				guidanceLines: guidanceLines,
+				fetchJson: fetchJson,
+				postForm: postForm,
+				setPageMessage: setPageMessage,
+				clearPageMessage: clearPageMessage,
+				showMessage: showMessage,
+				clearMessage: clearMessage
+			};
+		}
+
+		return {
+			create: create,
+			escapeHtml: escapeHtml,
+			toneClass: toneClass,
+			previewCell: previewCell,
+			previewTable: previewTable,
+			rawJsonBlock: rawJsonBlock,
+			alertHtml: alertHtml,
+			diagnosticHtml: diagnosticHtml,
+			summaryHtml: summaryHtml,
+			renderHtml: renderHtml,
+			renderDiagnostic: renderDiagnostic,
+			renderSummary: renderSummary,
+			renderFallbackSummary: renderFallbackSummary,
+			normalizeRows: normalizeRows,
+			guidanceLines: guidanceLines
+		};
+	})();
+</script>

@@ -1,0 +1,616 @@
+<%+header%>
+<%+lite_ipam/style%>
+<%+lite_ipam/ui%>
+<div class="cbi-map">
+	<h2 name="content">Lite IPAM 概览</h2>
+	<div class="cbi-map-descr" id="lite-ipam-descr-text">普通刷新只读取数据库与状态文件；后台每分钟对账租约，“同步租约”可立即对账。有效租约不等同于设备在线。no-RTC 租约文件仅提供时长，不据此推算到期时间；Hook 提供剩余时间时才记录估计到期时间。</div>
+	<div class="lite-ipam-shell">
+		<div class="lite-ipam-page-actions">
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'settings')%>">设置</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'subnets')%>">子网</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'manage')%>">主机管理</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'api', 'v1', 'export', 'scope')%>">导出范围</a>
+			<a class="cbi-button" href="<%=luci.dispatcher.build_url('admin', 'services', 'lite-ipam', 'api', 'v1', 'export', 'full')%>">导出全量</a>
+			<button class="cbi-button" id="lite-ipam-refresh-leases">同步租约</button>
+			<button class="cbi-button cbi-button-apply" id="lite-ipam-refresh">刷新页面数据</button>
+		</div>
+
+		<div class="lite-ipam-page-message" id="lite-ipam-message"></div>
+		<div class="cbi-section lite-ipam-panel">
+			<h3>健康提示</h3>
+			<div id="lite-ipam-health-alerts">正在检查当前状态...</div>
+		</div>
+
+		<div class="cbi-section">
+			<h3>系统概况</h3>
+			<div id="lite-ipam-summary-board">正在载入...</div>
+		</div>
+
+		<div class="cbi-section">
+			<h3>运行信息</h3>
+			<div id="lite-ipam-runtime-board">正在载入...</div>
+		</div>
+
+		<div class="cbi-section">
+			<h3>纳管范围</h3>
+			<div id="lite-ipam-stats"></div>
+		</div>
+
+		<div class="cbi-section lite-ipam-panel">
+			<h3>诊断详情</h3>
+			<p class="lite-ipam-help">这里保留组件级诊断信息；首页关键运行信息已在上方直接展示。</p>
+			<ul class="cbi-tabmenu" id="lite-ipam-state-switch">
+				<li class="cbi-tab" data-panel="status"><a href="#">系统</a></li>
+				<li class="cbi-tab-disabled" data-panel="health"><a href="#">健康</a></li>
+				<li class="cbi-tab-disabled" data-panel="storage"><a href="#">存储</a></li>
+				<li class="cbi-tab-disabled" data-panel="backup"><a href="#">备份</a></li>
+			</ul>
+			<div id="lite-ipam-state-status">
+				<div id="lite-ipam-status">正在载入...</div>
+			</div>
+			<div id="lite-ipam-state-health" hidden>
+				<div id="lite-ipam-health">正在载入...</div>
+			</div>
+			<div id="lite-ipam-state-storage" hidden>
+				<div id="lite-ipam-storage">正在载入...</div>
+			</div>
+			<div id="lite-ipam-state-backup" hidden>
+				<div id="lite-ipam-backup">正在载入...</div>
+			</div>
+		</div>
+
+		<div class="cbi-section lite-ipam-panel">
+			<h3>最近活动</h3>
+			<p class="lite-ipam-help">按主机、租约和事件切换查看最近记录。</p>
+			<ul class="cbi-tabmenu" id="lite-ipam-activity-switch">
+				<li class="cbi-tab" data-panel="hosts"><a href="#">最近主机</a></li>
+				<li class="cbi-tab-disabled" data-panel="leases"><a href="#">最近租约</a></li>
+				<li class="cbi-tab-disabled" data-panel="events"><a href="#">最近事件</a></li>
+			</ul>
+			<div id="lite-ipam-panel-hosts">
+				<div id="lite-ipam-hosts-table"></div>
+			</div>
+			<div id="lite-ipam-panel-leases" hidden>
+				<div id="lite-ipam-leases-table"></div>
+			</div>
+			<div id="lite-ipam-panel-events" hidden>
+				<div id="lite-ipam-events-table"></div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+	(function() {
+		var apiBase = '<%=luci.dispatcher.build_url("admin", "services", "lite-ipam", "api", "v1")%>';
+		var ui = window.LiteIpamUi.create({ apiBase: apiBase, messageId: 'lite-ipam-message' });
+		var activityPaths = {
+			hosts: '/overview/recent-hosts?limit=10',
+			leases: '/leases?limit=10',
+			events: '/events?limit=10'
+		};
+		var activityTargets = {
+			hosts: 'lite-ipam-hosts-table',
+			leases: 'lite-ipam-leases-table',
+			events: 'lite-ipam-events-table'
+		};
+		var activityCache = {
+			hosts: null,
+			leases: null,
+			events: null
+		};
+		var activityInflight = {
+			hosts: null,
+			leases: null,
+			events: null
+		};
+
+		function fetchJson(path) {
+			return ui.fetchJson(path);
+		}
+
+		function postForm(path, body) {
+			return ui.postForm(path, body || {});
+		}
+
+		function escapeHtml(value) {
+			return ui.escapeHtml(value);
+		}
+
+		function renderObject(id, data) {
+			ui.renderFallbackSummary(id, {
+				label: '摘要状态',
+				value: '无法生成',
+				accentColor: '#b91c1c',
+				message: '接口返回无法转换为概览摘要，请查看调试信息。',
+				rawData: data
+			});
+		}
+
+		function renderRequestError(id, title, error) {
+			ui.renderSummary(id, previewRowsFromItems([
+				{ label: '状态', html: statusPill(false, false) + ' 请求失败', accentColor: '#b91c1c' },
+				{ label: '说明', html: escapeHtml(error && (error.message || error.error) || 'unknown error') }
+			]), error || { error: 'unknown error', title: title }, {
+				rawTitle: '诊断视图：' + title + '接口错误',
+				rawLines: [
+					'当前分区：' + title,
+					'页面已尽量保留其它可用数据。'
+				]
+			});
+		}
+
+		function statusPill(ok, warnWhenFalse) {
+			var cls = ok ? 'ok' : (warnWhenFalse ? 'warn' : 'bad');
+			var text = ok ? '正常' : (warnWhenFalse ? '提醒' : '异常');
+			return '<span class="lite-ipam-pill ' + cls + '">' + text + '</span>';
+		}
+
+		function healthPill(data) {
+			var level = data.level || (data.ok ? 'ok' : 'error');
+			var labels = { ok: '正常', error: '需要处理', warning: '需关注', pending: '处理中', disabled: '已禁用' };
+			var cls = level === 'error' ? 'bad' : (level === 'ok' ? 'ok' : (level === 'disabled' ? 'soft' : 'warn'));
+			return '<span class="lite-ipam-pill ' + cls + '">' + escapeHtml(labels[level] || '状态未知') + '</span>';
+		}
+
+		function backupPill(data) {
+			if (data.message === 'no status recorded')
+				return '<span class="lite-ipam-pill soft">未执行</span>';
+			return statusPill(!!data.ok, true) + ' ' + escapeHtml(data.ok ? '最近一次成功' : '最近一次失败');
+		}
+
+		function renderHealthAlerts(data) {
+			if (!data) {
+				document.getElementById('lite-ipam-health-alerts').textContent = '健康状态读取失败，请重试刷新；不能确认当前运行正常。';
+				return;
+			}
+			var html = '<p>' + healthPill(data) + ' ' + escapeHtml(data.message || '状态未知') + '</p>';
+			function itemHtml(item) {
+				var cls = item.severity === 'error' ? 'bad' : (item.severity === 'warning' || item.severity === 'pending' ? 'warn' : 'soft');
+				var result = '<div class="lite-ipam-health-item ' + cls + '"><strong>' + escapeHtml(item.title) + '</strong>';
+				if (item.reason) result += '<div>原因：' + escapeHtml(item.reason) + '</div>';
+				if (item.impact) result += '<div>影响：' + escapeHtml(item.impact) + '</div>';
+				if (item.at) result += '<div>最近发生：' + escapeHtml(item.at) + '</div>';
+				if (item.recovered_at) result += '<div>恢复确认：' + escapeHtml(item.recovered_at) + '</div>';
+				if (item.action) result += '<div>建议：' + escapeHtml(item.action) + '</div>';
+				if (item.target === 'leases')
+					result += '<button type="button" class="cbi-button" data-health-sync="1">同步租约</button>';
+				else if (item.target === 'settings' || item.target === 'logs')
+					result += '<a class="cbi-button" href="' + apiBase.replace(/\/api\/v1$/, '/' + item.target) + '">' + (item.target === 'settings' ? '前往设置处理' : '查看日志') + '</a>';
+				if (item.detail)
+					result += '<details class="lite-ipam-raw"><summary>技术详情（原始错误）</summary><pre>' + escapeHtml(item.detail) + '</pre></details>';
+				return result + '</div>';
+			}
+			ui.normalizeRows(data.issues).forEach(function(item) { html += itemHtml(item); });
+			var notices = ui.normalizeRows(data.notices);
+			notices.filter(function(item) { return item.severity === 'pending'; }).forEach(function(item) { html += itemHtml(item); });
+			var unexecuted = notices.filter(function(item) { return item.severity === 'info'; });
+			if (unexecuted.length)
+				html += '<details class="lite-ipam-raw"><summary>未执行项目（' + unexecuted.length + '，不等于故障）</summary>' + unexecuted.map(itemHtml).join('') + '</details>';
+			var history = ui.normalizeRows(data.history);
+			if (history.length)
+				html += '<details class="lite-ipam-raw"><summary>历史异常（' + history.length + '，不计入当前故障）</summary>' + history.map(itemHtml).join('') + '</details>';
+			document.getElementById('lite-ipam-health-alerts').innerHTML = html;
+		}
+
+		function previewCell(label, valueHtml, accentColor) {
+			return ui.previewCell(label, valueHtml, accentColor);
+		}
+
+		function previewTable(rows) {
+			return ui.previewTable(rows);
+		}
+
+		function previewRowsFromItems(items) {
+			var rows = [];
+			for (var index = 0; index < items.length; index += 3) {
+				var line = '<tr class="tr">';
+				for (var offset = 0; offset < 3; offset++) {
+					var item = items[index + offset];
+					if (item)
+						line += previewCell(item.label, item.html, item.accentColor);
+					else
+						line += '<td class="td"></td><td class="td"></td>';
+				}
+				line += '</tr>';
+				rows.push(line);
+			}
+			return rows;
+		}
+
+		function metricTable(metrics) {
+			var rows = [];
+			for (var index = 0; index < metrics.length; index += 3) {
+				var line = '<tr class="tr">';
+				for (var offset = 0; offset < 3; offset++) {
+					var metric = metrics[index + offset];
+					if (metric)
+						line += previewCell(metric.label, escapeHtml(metric.value) + '<div class="lite-ipam-help">' + escapeHtml(metric.meta) + '</div>');
+					else
+						line += '<td class="td"></td><td class="td"></td>';
+				}
+				line += '</tr>';
+				rows.push(line);
+			}
+			return previewTable(rows);
+		}
+
+		function renderSystemOverview(status, health, storage, backup) {
+			var counts = status && status.counts || {};
+			var scopeCounts = counts.scope || counts;
+			var serviceCell = status ? (statusPill(!!status.enabled, true) + ' ' + escapeHtml(status.enabled ? '已启用' : '已禁用')) : (statusPill(false, false) + ' 请求失败');
+			var healthCell = health ? (healthPill(health) + ' ' + escapeHtml(health.message || '状态未知')) : (statusPill(false, false) + ' 请求失败');
+			var storageCell = storage ? (statusPill(!!storage.ok, true) + ' ' + escapeHtml(storage.ok ? '可用' : '待处理')) : (statusPill(false, false) + ' 请求失败');
+			var backupCell = backup ? backupPill(backup) : (statusPill(false, false) + ' 请求失败');
+			var rows = [
+				'<tr class="tr">' +
+					previewCell('服务', serviceCell, '#1d4ed8') +
+					previewCell('健康', healthCell, '#15803d') +
+					previewCell('存储', storageCell, '#b45309') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell('范围', escapeHtml(scopeCounts.hosts || 0) + ' 主机 / ' + escapeHtml(scopeCounts.subnets || 0) + ' 子网') +
+					previewCell('租约', escapeHtml(scopeCounts.leases || 0) + ' / 事件 ' + escapeHtml(scopeCounts.events || 0)) +
+					previewCell('备份', backupCell, '#b42318') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell('说明', escapeHtml(status && status.message || '-')) +
+					previewCell('存储目录', escapeHtml(storage && storage.data_root || '-')) +
+					previewCell('备份时间', escapeHtml(backup && (backup.updated_at || backup.message) || '-')) +
+				'</tr>'
+			];
+			document.getElementById('lite-ipam-summary-board').innerHTML = previewTable(rows);
+		}
+
+		function renderRuntimeOverview(status, health, storage, backup) {
+			var dataRoot = storage && storage.data_root || status && status.data_root || '-';
+			var hookRuntime = health && health.hook_runtime || null;
+			var hookSummary = hookRuntime && hookRuntime.observed
+				? ((hookRuntime.action || 'event') + ' @ ' + (hookRuntime.last_event_at || '-'))
+				: (health && health.hook && health.hook.message || '-');
+			var rows = [
+				'<tr class="tr">' +
+					previewCell('节点', escapeHtml(status && status.node_name || '-'), '#1d4ed8') +
+					previewCell('开关', escapeHtml(status ? (status.enabled ? '已启用' : '已禁用') : '请求失败'), '#15803d') +
+					previewCell('目录', escapeHtml(dataRoot), '#b45309') +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell('最近写入', escapeHtml(status && status.last && status.last.db_last_write_at || '-')) +
+					previewCell('Hook', escapeHtml(hookSummary)) +
+					previewCell('数据库', escapeHtml(storage && storage.db_exists ? '数据库已存在' : '数据库缺失')) +
+				'</tr>',
+				'<tr class="tr">' +
+					previewCell('Hook 接口', escapeHtml(hookRuntime && hookRuntime.interface_name || '-')) +
+					previewCell('Hook 结果', escapeHtml(hookRuntime && hookRuntime.message || '-')) +
+					previewCell('新建主机', escapeHtml(hookRuntime && hookRuntime.observed ? (hookRuntime.host_created ? '是' : '否') : '-')) +
+				'</tr>'
+			];
+			document.getElementById('lite-ipam-runtime-board').innerHTML = previewTable(rows);
+		}
+
+		function messageTone(type) {
+			if (type === 'ok')
+				return 'success';
+			if (type === 'bad')
+				return 'danger';
+			if (type === 'notice')
+				return 'notice';
+			return 'warning';
+		}
+
+		function commonGuidanceLines(message) {
+			return ui.guidanceLines(message, { scope: '概览' });
+		}
+
+		function setPageMessage(type, title, lines, rawData, rawTitle, rawLines) {
+			ui.showMessage(type, title, lines, rawData, rawTitle, rawLines);
+		}
+
+		function clearPageMessage() {
+			ui.clearMessage();
+		}
+
+		function setDescrText(text) {
+			document.getElementById('lite-ipam-descr-text').textContent = text;
+		}
+
+		function renderStats(status, health, storage) {
+			var el = document.getElementById('lite-ipam-stats');
+			var counts = status.counts || {};
+			var scopeCounts = counts.scope || counts;
+			var fullCounts = counts.full || counts;
+			function countMeta(name, label) {
+				return label + ' / 全库 ' + escapeHtml(fullCounts[name] || 0);
+			}
+			var metrics = [
+				{ label: '范围内主机', value: scopeCounts.hosts || 0, meta: countMeta('hosts', '已选接口范围') },
+				{ label: '范围内子网', value: scopeCounts.subnets || 0, meta: countMeta('subnets', '已选接口范围') },
+				{ label: '范围内租约', value: scopeCounts.leases || 0, meta: countMeta('leases', '未纳管发现') },
+				{ label: '范围内事件', value: scopeCounts.events || 0, meta: countMeta('events', '操作与租约变更') }
+			];
+			el.innerHTML = metricTable(metrics);
+		}
+
+		function renderStatusSummary(data) {
+			ui.renderSummary('lite-ipam-status', previewRowsFromItems([
+				{ label: '服务开关', html: statusPill(!!data.enabled, true) + ' ' + escapeHtml(data.enabled ? '已启用' : '已禁用'), accentColor: '#1d4ed8' },
+				{ label: '数据目录', html: escapeHtml(data.configured ? '已配置' : '未配置'), accentColor: '#15803d' },
+				{ label: '节点名称', html: escapeHtml(data.node_name || '-'), accentColor: '#b45309' },
+				{ label: 'Schema 版本', html: escapeHtml(data.schema_version || '-') },
+				{ label: '最近数据库写入', html: escapeHtml(data.last && data.last.db_last_write_at || '-') },
+				{ label: '说明', html: escapeHtml(data.message || '-') }
+			]), data, {
+				rawTitle: '诊断视图：状态摘要 JSON',
+				rawLines: [
+					'分区：状态摘要',
+					'节点：' + (data.node_name || '-')
+				]
+			});
+		}
+
+		function renderHealthSummary(data) {
+			var warningText = ui.normalizeRows(data.issues).map(function(item) { return item.title; }).join('；') || '无当前故障或提醒';
+			ui.renderSummary('lite-ipam-health', previewRowsFromItems([
+				{ label: '整体状态', html: healthPill(data) + ' ' + escapeHtml(data.message || '状态未知'), accentColor: '#1d4ed8' },
+				{ label: 'SQLite', html: escapeHtml(data.sqlite_available ? '可用' : '缺失'), accentColor: '#15803d' },
+				{ label: '存储检测', html: escapeHtml(data.storage && data.storage.ok ? '通过' : (data.storage && data.storage.message) || '失败'), accentColor: '#b45309' },
+				{ label: '提示信息', html: escapeHtml(warningText) },
+				{ label: '生成状态', html: escapeHtml(data.generation && data.generation.message || '-') },
+				{ label: '实际加载', html: escapeHtml(data.publication && data.publication.message || '-') },
+				{ label: '后台对账', html: escapeHtml(data.worker_running ? '运行中（每分钟）' : '未运行') },
+				{ label: '待发布变更', html: escapeHtml(data.publication_pending ? '有（合并发布中）' : '无') },
+				{ label: '租约对账', html: escapeHtml(data.lease_sync && data.lease_sync.message || '-') },
+				{ label: '数据库历史失败', html: escapeHtml(data.database && data.database.failures || 0) + ' 次（累计，不代表当前故障）' },
+				{ label: '上次数据库失败时间', html: escapeHtml(data.database && data.database.updated_at || '无记录') },
+				{ label: '租约 Hook', html: escapeHtml(data.hook && data.hook.message || '-') },
+				{ label: '最近 Hook 事件', html: escapeHtml(data.hook_runtime && data.hook_runtime.last_event_at || '-') },
+				{ label: 'dnsmasq hostsfile', html: escapeHtml(data.dnsmasq_hostsfile || '-') },
+				{ label: 'dnsmasq dhcpscript', html: escapeHtml(data.dnsmasq_dhcpscript || '-') },
+				{ label: 'DHCP hotplug', html: escapeHtml(data.dhcp_hotplug_exists ? (data.dhcp_hotplug_script || '-') : '缺失') },
+				{ label: 'Hook 运行观测', html: escapeHtml(data.hook_runtime && data.hook_runtime.message || '-') },
+				{ label: '说明', html: escapeHtml(data.message || '-') }
+			]), data, {
+				rawTitle: '诊断视图：健康检查 JSON',
+				rawLines: [
+					'分区：健康检查',
+					'告警数量：' + ((data.warnings && data.warnings.length) || 0)
+				]
+			});
+		}
+
+		function renderStorageSummary(data) {
+			ui.renderSummary('lite-ipam-storage', previewRowsFromItems([
+				{ label: '当前状态', html: statusPill(!!data.ok, true) + ' ' + escapeHtml(data.ok ? '存储就绪' : '待初始化'), accentColor: '#1d4ed8' },
+				{ label: '检查结果', html: escapeHtml(data.message || '-'), accentColor: '#15803d' },
+				{ label: '数据目录', html: escapeHtml(data.data_root || '-'), accentColor: '#b45309' },
+				{ label: '目录存在', html: escapeHtml(data.data_root_exists ? '是' : '否') },
+				{ label: '目录可写', html: escapeHtml(data.data_root_writable ? '是' : '否') },
+				{ label: '数据库文件', html: escapeHtml(data.db_exists ? '已存在' : '缺失') },
+				{ label: 'hosts.conf', html: escapeHtml(data.hosts_conf_exists ? '已存在' : '缺失') },
+				{ label: '状态目录', html: escapeHtml(data.status_dir_exists ? '已存在' : '缺失') }
+			]), data, {
+				rawTitle: '诊断视图：存储检查 JSON',
+				rawLines: [
+					'分区：存储检查',
+					'数据目录：' + (data.data_root || '-')
+				]
+			});
+		}
+
+		function renderBackupSummary(data) {
+			ui.renderSummary('lite-ipam-backup', previewRowsFromItems([
+				{ label: '任务状态', html: backupPill(data), accentColor: '#1d4ed8' },
+				{ label: '说明', html: escapeHtml(data.message || '-'), accentColor: '#15803d' },
+				{ label: '归档文件', html: escapeHtml(data.archive || '-'), accentColor: '#b45309' },
+				{ label: '更新时间', html: escapeHtml(data.updated_at || '-') }
+			]), data, {
+				rawTitle: '诊断视图：备份状态 JSON',
+				rawLines: [
+					'分区：备份状态',
+					'归档文件：' + (data.archive || '-')
+				]
+			});
+		}
+
+		function renderTimeline(id, rows, kind) {
+			var el = document.getElementById(id);
+			rows = ui.normalizeRows(rows);
+			if (!rows.length)
+				el.innerHTML = '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">时间</th><th class="th">名称</th><th class="th">范围</th><th class="th">IP</th><th class="th">MAC</th></tr><tr class="tr placeholder"><td class="td" colspan="5"><em>当前分类还没有最近活动</em></td></tr></tbody></table>';
+			else if (kind === 'hosts') {
+				el.innerHTML = '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">租约确认时间</th><th class="th">主机</th><th class="th">子网</th><th class="th">IP</th><th class="th">MAC</th></tr>' + rows.map(function(row) {
+					var activityText = row.last_activity_state === 'available' ? ('活动 ' + (row.last_activity || '-')) : (row.last_activity_state === 'pending_probe' ? '活动状态 pending_probe' : '活动状态 unavailable');
+					return '<tr class="tr"><td class="td">' + escapeHtml(row.lease_seen_at || row.last_seen || row.updated_at || '-') + '</td><td class="td">' + escapeHtml(row.hostname || row.ip || '(未命名主机)') + '<div class="lite-ipam-help">' + escapeHtml(activityText) + '</div></td><td class="td">#' + escapeHtml(row.subnet_id || '-') + ' / VLAN ' + escapeHtml(row.vlan_id || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.ip || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.mac || '-') + '</td></tr>';
+				}).join('') + '</tbody></table>';
+			} else if (kind === 'leases') {
+				el.innerHTML = '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">时间</th><th class="th">租约</th><th class="th">状态</th><th class="th">VLAN</th><th class="th">IP</th><th class="th">MAC</th></tr>' + rows.map(function(row) {
+					return '<tr class="tr"><td class="td">' + escapeHtml(row.updated_at || row.seen_at || '-') + '</td><td class="td">' + escapeHtml(row.hostname || row.ip || 'Lease') + '</td><td class="td">' + escapeHtml(row.state || '-') + '</td><td class="td">' + escapeHtml(row.vlan_id || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.ip || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.mac || '-') + '</td></tr>';
+				}).join('') + '</tbody></table>';
+			} else {
+				el.innerHTML = '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">时间</th><th class="th">事件</th><th class="th">对象</th><th class="th">ID</th><th class="th">IP</th><th class="th">MAC</th></tr>' + rows.map(function(row) {
+					return '<tr class="tr"><td class="td">' + escapeHtml(row.created_at || '-') + '</td><td class="td">' + escapeHtml(row.event_type || 'Event') + '</td><td class="td">' + escapeHtml(row.hostname || row.detail || '-') + '</td><td class="td">' + escapeHtml(row.id || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.ip || '-') + '</td><td class="td lite-ipam-mono">' + escapeHtml(row.mac || '-') + '</td></tr>';
+				}).join('') + '</tbody></table>';
+			}
+		}
+
+		function renderTimelineLoading(kind) {
+			document.getElementById(activityTargets[kind]).innerHTML = '<table class="table cbi-section-table"><tbody><tr class="tr table-titles"><th class="th">状态</th><th class="th">说明</th></tr><tr class="tr placeholder"><td class="td">载入中</td><td class="td"><em>正在读取最近活动，请稍候...</em></td></tr></tbody></table>';
+		}
+
+		function loadActivity(kind, forceReload) {
+			if (!activityPaths[kind])
+				return Promise.resolve(null);
+			if (!forceReload && activityCache[kind] !== null) {
+				renderTimeline(activityTargets[kind], activityCache[kind], kind);
+				return Promise.resolve(activityCache[kind]);
+			}
+			if (!forceReload && activityInflight[kind])
+				return activityInflight[kind];
+			renderTimelineLoading(kind);
+			activityInflight[kind] = settledFetch(activityPaths[kind]).then(function(result) {
+				activityInflight[kind] = null;
+				activityCache[kind] = result.ok ? result.data : [];
+				renderTimeline(activityTargets[kind], activityCache[kind], kind);
+				return activityCache[kind];
+			});
+			return activityInflight[kind];
+		}
+
+		function activatePanel(name) {
+			Array.prototype.forEach.call(document.querySelectorAll('#lite-ipam-activity-switch li'), function(tab) {
+				tab.className = tab.getAttribute('data-panel') === name ? 'cbi-tab' : 'cbi-tab-disabled';
+			});
+			Array.prototype.forEach.call(document.querySelectorAll('[id^="lite-ipam-panel-"]'), function(panel) {
+				panel.hidden = panel.id !== 'lite-ipam-panel-' + name;
+			});
+			loadActivity(name, false);
+		}
+
+		function activateStatePanel(name) {
+			Array.prototype.forEach.call(document.querySelectorAll('#lite-ipam-state-switch li'), function(tab) {
+				tab.className = tab.getAttribute('data-panel') === name ? 'cbi-tab' : 'cbi-tab-disabled';
+			});
+			['status', 'health', 'storage', 'backup'].forEach(function(panel) {
+				document.getElementById('lite-ipam-state-' + panel).hidden = panel !== name;
+			});
+		}
+
+		function settledFetch(path) {
+			return Promise.race([
+				fetchJson(path),
+				new Promise(function(_, reject) {
+					window.setTimeout(function() {
+						reject({ message: 'request timeout', path: path });
+					}, 15000);
+				})
+			]).then(function(data) {
+				return { ok: true, data: data };
+			}).catch(function(error) {
+				return { ok: false, error: error };
+			});
+		}
+
+		function loadOverview(options) {
+			options = options || {};
+			var summaryPath = '/overview/summary' + (options.forceFresh ? '?force=1' : '');
+			setDescrText('正在刷新概览信息...');
+			activityCache.hosts = null;
+			activityCache.leases = null;
+			activityCache.events = null;
+			if (options.announce)
+				setPageMessage('notice', '正在刷新概览', ['正在重新读取状态、存储和最近活动，请稍候...']);
+			else
+				clearPageMessage();
+			return settledFetch(summaryPath).then(function(result) {
+				var summary = result.ok ? result.data : null;
+				var status = summary && summary.status || null;
+				var health = summary && summary.health || null;
+				var storage = summary && summary.storage || null;
+				var backup = summary && summary.backup || null;
+				renderHealthAlerts(health);
+				if (status) renderStatusSummary(status); else renderRequestError('lite-ipam-status', '状态', result.error);
+				if (health) renderHealthSummary(health); else renderRequestError('lite-ipam-health', '健康', result.error);
+				if (storage) renderStorageSummary(storage); else renderRequestError('lite-ipam-storage', '存储', result.error);
+				if (backup) renderBackupSummary(backup); else renderRequestError('lite-ipam-backup', '备份', result.error);
+				if (status && health && storage)
+					renderStats(status, health, storage);
+				else
+					document.getElementById('lite-ipam-stats').innerHTML = previewTable([
+						'<tr class="tr">' +
+							previewCell('纳管范围', '暂不完整', '#b45309') +
+							previewCell('说明', '部分接口请求失败，请查看诊断详情。') +
+							'<td class="td"></td><td class="td"></td>' +
+						'</tr>'
+					]);
+				renderSystemOverview(status, health, storage, backup);
+				renderRuntimeOverview(status, health, storage, backup);
+
+				if (storage && !storage.ok) {
+					if (options.announce)
+						setPageMessage('bad', '存储尚未就绪', [
+							storage.message || '请检查数据目录设置。'
+						].concat(commonGuidanceLines(storage.message)), storage);
+					else
+						clearPageMessage();
+					setDescrText('Lite IPAM 已载入，但存储状态未就绪。建议先检查设置页中的 data_root。');
+				} else if (health && health.level !== 'ok') {
+					clearPageMessage();
+					setDescrText(health.message || '请查看上方健康提示中的具体影响及处理建议。');
+				} else if (!result.ok) {
+					if (options.announce)
+						setPageMessage('bad', '部分接口请求失败', ['页面已尽量展示可用数据。', '请查看失败区块中的错误详情。']);
+					else
+						clearPageMessage();
+					setDescrText('概览页没有完全加载成功，请查看失败区块中的错误信息。');
+				} else {
+					if (options.announce)
+						setPageMessage('ok', '已刷新', ['纳管范围与最近活动已更新。']);
+					else
+						clearPageMessage();
+					setDescrText('系统状态正常，下面展示纳管范围与最近活动。需要细节时可展开原始 JSON。');
+				}
+				return loadActivity('hosts', true);
+			});
+		}
+
+		Array.prototype.forEach.call(document.querySelectorAll('#lite-ipam-activity-switch li'), function(tab) {
+			tab.addEventListener('click', function(event) {
+				event.preventDefault();
+				activatePanel(tab.getAttribute('data-panel'));
+			});
+		});
+
+		Array.prototype.forEach.call(document.querySelectorAll('#lite-ipam-state-switch li'), function(tab) {
+			tab.addEventListener('click', function(event) {
+				event.preventDefault();
+				activateStatePanel(tab.getAttribute('data-panel'));
+			});
+		});
+
+		document.getElementById('lite-ipam-refresh').addEventListener('click', function() {
+			loadOverview({ announce: true }).catch(function(err) {
+				var message = err && (err.message || err.error || String(err));
+				setPageMessage('bad', '概览刷新失败', [message].concat(commonGuidanceLines(message)), err);
+				renderRequestError('lite-ipam-status', '状态', err);
+				setDescrText('概览刷新失败，请检查 API 返回。');
+			});
+		});
+		document.getElementById('lite-ipam-health-alerts').addEventListener('click', function(event) {
+			if (event.target.getAttribute('data-health-sync') === '1')
+				document.getElementById('lite-ipam-refresh-leases').click();
+		});
+
+		document.getElementById('lite-ipam-refresh-leases').addEventListener('click', function() {
+			setDescrText('正在手动同步租约，请稍候...');
+			setPageMessage('notice', '正在同步租约', ['正在从 dnsmasq 读取最新租约并写入数据库，请稍候...']);
+			postForm('/leases/refresh', {}).then(function(result) {
+				activityCache.hosts = null;
+				activityCache.leases = null;
+				activityCache.events = null;
+				setPageMessage('ok', '租约已同步', [
+					result.message || '租约同步已完成。',
+					result.records != null ? ('处理记录：' + result.records) : '处理记录：未知',
+					result.ignored != null ? ('忽略记录：' + result.ignored) : ''
+				].filter(Boolean));
+				loadOverview({ announce: false, forceFresh: true }).catch(function(err) {
+					var message = err && (err.message || err.error || String(err));
+					setPageMessage('bad', '租约同步后概览更新失败', [message].concat(commonGuidanceLines(message)), err);
+					setDescrText('租约已同步，但概览回读失败，请检查 API 返回。');
+				});
+			}).catch(function(err) {
+				var message = err && (err.message || err.error || String(err));
+				setPageMessage('bad', '手动同步租约失败', [message].concat(commonGuidanceLines(message)), err);
+				setDescrText('手动同步租约失败，请检查 dnsmasq 租约文件或 sqlite 状态。');
+			});
+		});
+
+		loadOverview({ announce: false }).catch(function(err) {
+			var message = err && (err.message || err.error || String(err));
+			setPageMessage('bad', '概览加载失败', [message].concat(commonGuidanceLines(message)), err);
+			renderRequestError('lite-ipam-status', '状态', err);
+			setDescrText('概览加载失败，请检查 API 或认证参数。');
+		});
+	})();
+</script>
+
+<%+footer%>

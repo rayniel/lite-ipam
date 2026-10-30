@@ -1,0 +1,33 @@
+#!/bin/sh
+
+CTL_PATH="/usr/libexec/lite-ipam/lite-ipam.sh"
+LOG_TAG="lite-ipam"
+
+hotplug_log() {
+	logger -t "$LOG_TAG" "[HOTPLUG] $*" 2>/dev/null || true
+}
+
+case "$ACTION" in
+	add) lease_action="add" ;;
+	update) lease_action="old" ;;
+	remove) lease_action="del" ;;
+	*) exit 0 ;;
+esac
+
+[ -n "$MACADDR" ] && [ -n "$IPADDR" ] || exit 0
+
+[ -x "$CTL_PATH" ] || {
+	hotplug_log "lease-event skipped: missing ctl path $CTL_PATH"
+	exit 0
+}
+
+"$CTL_PATH" lease-event \
+	--action "$lease_action" \
+	--mac "$MACADDR" \
+	--ip "$IPADDR" \
+	--hostname "$HOSTNAME" >/dev/null || {
+		hotplug_log "lease-event action=$lease_action mac=${MACADDR:-} ip=${IPADDR:-} failed"
+		exit 1
+	}
+
+exit 0
